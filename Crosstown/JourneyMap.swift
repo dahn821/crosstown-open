@@ -11,11 +11,15 @@ struct JourneyMap: View {
     var busStops: [Place] = []
     var selectedLine = ""
     var highlightedStations: Set<String> = []
+    var stationPredictions: [TransitDeparture] = []
     var onCenterChange: ((Coordinate) -> Void)? = nil
     var onStop: ((String, String, Coordinate) -> Void)? = nil
     @State private var snapshot: VehicleSnapshot?
     @State private var vehicleBounds: [Double]?
     @State private var selectedVehicle: LiveVehicle?
+    @State private var trackedTrip: VehicleTrip?
+    @State private var trackingError = false
+    @State private var camera: MapCameraPosition?
     @State private var vehicleError: String?
     private var region: MKCoordinateRegion {
         let a = origin?.coordinate ?? Coordinate(40.7505, -73.9934)
@@ -35,8 +39,8 @@ struct JourneyMap: View {
     private var routeLines: [String] { selectedLine.isEmpty ? [] : [selectedLine] }
     private var queryID: String { (apiBaseURLString ?? "") + (liveMode?.rawValue ?? "") + queryBounds.map { String($0) }.joined(separator: ",") + routeLines.joined(separator: ",") }
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 5)) { context in
-        Map(initialPosition: .region(region), interactionModes: [.pan, .zoom]) {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+        Map(position: Binding(get: { camera ?? .region(region) }, set: { camera = $0 }), interactionModes: [.pan, .zoom]) {
             if let route {
                 ForEach(route.legs) { leg in
                     MapPolyline(coordinates: leg.coordinates.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) })
@@ -49,7 +53,7 @@ struct JourneyMap: View {
                 }
                 ForEach(Array(network.segments.enumerated()), id: \.offset) { _, segment in
                     MapPolyline(coordinates: segmentCoordinates(segment))
-                        .stroke(SubwayBadge.color(segment.line, reported: segment.color).opacity(0.92), style: railStroke(width: 4.5))
+                        .stroke(SubwayBadge.color(segment.line, reported: segment.color).opacity(selectedVehicle == nil ? 0.92 : 0.22), style: railStroke(width: 4.5))
                 }
                 if queryBounds[2] - queryBounds[0] < 0.11 {
                     ForEach(network.stations) { station in
@@ -76,26 +80,13 @@ struct JourneyMap: View {
                     Image(systemName: "flag.fill").font(.system(size: 14)).foregroundStyle(.white).padding(10).background(Theme.ink, in: Circle())
                 }
             }
-            ForEach(visibleVehicles(at: context.date)) { vehicle in
-                Annotation(vehicle.line, coordinate: CLLocationCoordinate2D(latitude: vehicle.coordinate.latitude, longitude: vehicle.coordinate.longitude)) {
-                    Button { selectedVehicle = vehicle } label: {
-                        if liveMode == .subway {
-                            SubwayBadge(line: vehicle.line, reportedColor: vehicle.routeColor, size: 22)
-                                .shadow(color: .black.opacity(0.4), radius: 2)
-                                .overlay {
-                                    if let bearing = vehicle.bearing {
-                                        Image(systemName: "location.north.fill").font(.system(size: 9, weight: .bold))
-                                            .foregroundStyle(SubwayBadge.color(vehicle.line, reported: vehicle.routeColor))
-                                            .padding(2).background(.white, in: Circle())
-                                            .offset(y: -17).rotationEffect(.degrees(bearing)).accessibilityHidden(true)
-                                    }
-                                }
-                        } else {
-                            VehicleMapPin(vehicle: vehicle, compact: queryBounds[2] - queryBounds[0] > 0.045)
-                        }
-                    }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("\(vehicle.mode == .bus ? "Bus" : "Train") \(vehicle.line). \(vehicle.accuracyLabel). \(vehicle.status). \(vehicle.directionLabel ?? "")")
+            if let trip = trackedTrip, let selectedVehicle {
+                trackingPaths(trip, vehicle: selectedVehicle)
+            }
+            ForEach(vehicleGroups(at: context.date)) { group in
+                let coordinate = group.vehicles[0].coordinate
+                Annotation("Vehicle", coordinate: CLLocationCoordinate2D(latitude: coordinate.latitude, longitude: coordinate.longitude)) {
+                    vehicleButton(group.vehicles, at: context.date)
                 }.annotationTitles(.hidden)
             }
         }.mapStyle(.standard(elevation: .flat, emphasis: .muted, pointsOfInterest: .excludingAll))
@@ -104,10 +95,12 @@ struct JourneyMap: View {
                 let r = change.region
                 let next = [r.center.longitude - r.span.longitudeDelta / 2, r.center.latitude - r.span.latitudeDelta / 2, r.center.longitude + r.span.longitudeDelta / 2, r.center.latitude + r.span.latitudeDelta / 2].map { ($0 * 10000).rounded() / 10000 }
                 if next != vehicleBounds { vehicleBounds = next }
-                onCenterChange?(Coordinate((r.center.latitude * 10000).rounded() / 10000, (r.center.longitude * 10000).rounded() / 10000))
+                if selectedVehicle == nil {
+                    onCenterChange?(Coordinate((r.center.latitude * 10000).rounded() / 10000, (r.center.longitude * 10000).rounded() / 10000))
+                }
             }
             .overlay {
-                if liveMode != nil {
+                if liveMode != nil && selectedVehicle == nil {
                     Image(systemName: "scope").font(.system(size: 31, weight: .medium))
                         .foregroundStyle(Theme.blue).padding(3).background(.white, in: Circle())
                         .shadow(color: .black.opacity(0.22), radius: 3, y: 1)
@@ -115,8 +108,10 @@ struct JourneyMap: View {
                 }
             }
             .overlay(alignment: .topTrailing) { if let liveMode { liveCaption(liveMode, now: context.date) } }
-            .accessibilityLabel("Map with bus GPS locations, station-based train estimates, and the selected route. Tap a vehicle for its source and report time.")
+            .accessibilityLabel("Live transit map. Tap a vehicle to see its upcoming stops.")
         }
+        .onChange(of: origin?.id) { _, _ in camera = nil }
+        .onChange(of: destination?.id) { _, _ in camera = nil }
         .task(id: queryID) {
             guard let apiBaseURLString, let url = URL(string: apiBaseURLString) else { return }
             do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
@@ -132,20 +127,174 @@ struct JourneyMap: View {
                 do { try await Task.sleep(for: .seconds(15)) } catch { return }
             }
         }
-        .sheet(item: $selectedVehicle) { selected in
-            let vehicle = snapshot?.vehicles.first(where: { $0.id == selected.id }) ?? selected
-            VehicleReportView(vehicle: vehicle)
+        .task(id: selectedVehicle?.id) {
+            trackedTrip = nil; trackingError = false
+            guard let vehicle = selectedVehicle, let id = vehicle.trackingId,
+                  let apiBaseURLString, let url = URL(string: apiBaseURLString) else { return }
+            let client = LiveRoutingClient(baseURL: url)
+            var fitted = false
+            while !Task.isCancelled {
+                do {
+                    let trip = try await client.vehicleTrip(id: id)
+                    guard !Task.isCancelled else { return }
+                    trackedTrip = trip; trackingError = false
+                    if !fitted && trip.status == .live { fitted = fitTrip(trip) }
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    trackedTrip = nil; trackingError = true
+                }
+                do { try await Task.sleep(for: .seconds(15)) } catch { return }
+            }
+        }
+        .sheet(item: $selectedVehicle, onDismiss: {
+            trackedTrip = nil
+            if let center = vehicleBounds {
+                onCenterChange?(Coordinate((center[1] + center[3]) / 2, (center[0] + center[2]) / 2))
+            }
+        }) { selected in
+            let current = visibleVehicles(at: .now).first { $0.id == selected.id || ($0.trackingId != nil && $0.trackingId == selected.trackingId) }
+            VehicleReportView(vehicle: current ?? selected, current: current != nil, trip: trackedTrip, error: trackingError)
+        }
+    }
+    private struct VehicleGroup: Identifiable {
+        var id: String
+        var vehicles: [LiveVehicle]
+    }
+    private func vehicleGroups(at now: Date) -> [VehicleGroup] {
+        Dictionary(grouping: visibleVehicles(at: now)) { vehicle in
+            guard vehicle.mode == .subway else { return vehicle.id }
+            let latitude = (vehicle.coordinate.latitude * 100000).rounded()
+            let longitude = (vehicle.coordinate.longitude * 100000).rounded()
+            return "\(latitude),\(longitude)"
+        }.map { VehicleGroup(id: $0.key, vehicles: $0.value.sorted {
+            if $0.isDue(at: now) != $1.isDue(at: now) { return $0.isDue(at: now) }
+            return $0.id < $1.id
+        }) }.sorted { $0.id < $1.id }
+    }
+    @ViewBuilder private func vehicleButton(_ vehicles: [LiveVehicle], at now: Date) -> some View {
+        let vehicle = vehicles[0], due = vehicles.filter { $0.isDue(at: now) }.count
+        if vehicles.count > 1 {
+            Menu {
+                ForEach(vehicles) { item in
+                    Button(vehicleLabel(item, at: now)) { selectedVehicle = item }
+                }
+            } label: {
+                vehiclePin(vehicle, due: due).opacity(markerOpacity(vehicles))
+            }.buttonStyle(.plain).accessibilityLabel("\(vehicles.count) trains at this marker, \(due) due")
+        } else {
+            Button { selectedVehicle = vehicle } label: { vehiclePin(vehicle, due: due).opacity(markerOpacity(vehicles)) }
+                .buttonStyle(.plain).accessibilityLabel(vehicleLabel(vehicle, at: now))
+        }
+    }
+    private func markerOpacity(_ vehicles: [LiveVehicle]) -> Double {
+        guard let selectedVehicle else { return 1 }
+        return vehicles.contains { $0.id == selectedVehicle.id || ($0.trackingId != nil && $0.trackingId == selectedVehicle.trackingId) } ? 1 : 0.25
+    }
+    private func vehicleLabel(_ vehicle: LiveVehicle, at now: Date) -> String {
+        [vehicle.mode == .bus ? "Bus \(vehicle.line)" : "Train \(vehicle.line)", vehicle.directionLabel,
+         vehicle.isDue(at: now) ? "Due" : nil, vehicle.accuracyLabel, vehicle.status].compactMap { $0 }.joined(separator: ", ")
+    }
+    @ViewBuilder private func vehiclePin(_ vehicle: LiveVehicle, due: Int) -> some View {
+        if vehicle.mode == .subway && liveMode == .subway {
+            SubwayBadge(line: vehicle.line, reportedColor: vehicle.routeColor, size: 22)
+                .background {
+                    if vehicle.accuracy == "prediction-stop" {
+                        Circle().strokeBorder(Theme.green, style: StrokeStyle(lineWidth: 1.5, dash: [3, 2])).padding(-3)
+                    }
+                }
+                .shadow(color: .black.opacity(0.4), radius: 2)
+                .overlay {
+                    if let bearing = vehicle.bearing {
+                        Image(systemName: "location.north.fill").font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(SubwayBadge.color(vehicle.line, reported: vehicle.routeColor))
+                            .padding(2).background(.white, in: Circle())
+                            .offset(y: -17).rotationEffect(.degrees(bearing)).accessibilityHidden(true)
+                    }
+                }
+                .overlay(alignment: .bottom) {
+                    if due > 0 {
+                        Text(due > 1 ? "Due ×\(due)" : "Due").font(.system(size: 9, weight: .bold)).fixedSize()
+                            .foregroundStyle(.white).padding(.horizontal, 4).padding(.vertical, 2)
+                            .background(Theme.green, in: Capsule()).offset(y: 14).accessibilityHidden(true)
+                    }
+                }
+                .frame(minWidth: 30, minHeight: 33).contentShape(Rectangle())
+        } else {
+            VehicleMapPin(vehicle: vehicle, compact: queryBounds[2] - queryBounds[0] > 0.045)
         }
     }
     private func visibleVehicles(at now: Date) -> [LiveVehicle] {
-        (snapshot?.vehicles ?? []).filter { v in
-            now.timeIntervalSince(v.reportedDate) <= 90 && (liveMode == nil || v.mode == liveMode)
+        var reports: [String: LiveVehicle] = [:]
+        let positions = (snapshot?.vehicles ?? []) + [trackedTrip?.position].compactMap { $0 }
+        for var vehicle in positions where liveMode == nil || vehicle.mode == liveMode {
+            if vehicle.accuracy == "prediction-stop", !vehicle.isDue(at: now) {
+                guard let position = vehicle.positionReport, let seen = TransitArrival.date(position.reportedAt) else { continue }
+                vehicle.accuracy = position.accuracy; vehicle.coordinate = position.coordinate
+                vehicle.stopName = position.stopName; vehicle.reportedAt = position.reportedAt
+                vehicle.reportedAtSeconds = seen.timeIntervalSince1970
+                vehicle.status = position.stopName.map { position.accuracy == "reported-stop" ? "Reported at \($0)" : "Heading toward \($0)" } ?? "MTA station report"
+                vehicle.bearing = nil; vehicle.directionLabel = nil; vehicle.nextStop = nil
+            }
+            if now.timeIntervalSince(vehicle.reportedDate) <= (vehicle.accuracy == "prediction-stop" ? 180 : 90) {
+                let id = vehicle.trackingId ?? vehicle.id
+                if reports[id]?.reportedDate ?? .distantPast <= vehicle.reportedDate { reports[id] = vehicle }
+            }
         }
+        for row in stationPredictions {
+            guard row.mode == .subway, let id = row.trackingId,
+                  let time = TransitArrival.date(row.predictionReportedAt), now.timeIntervalSince(time) <= 180,
+                  TransitArrival.label(arrival: row.arrivalTime, departure: row.departureTime, now: now) == "Due" else { continue }
+            let stopID = row.stop.id.components(separatedBy: ":").last ?? row.stop.id
+            var vehicle = reports[id] ?? LiveVehicle(predicted: row, reportedDate: time)
+            if vehicle.accuracy == "gps" { continue }
+            let stop = VehicleStopPrediction(departure: row, stopId: stopID)
+            if vehicle.accuracy != "reported-stop" || vehicle.positionReport?.stopId != stopID {
+                if vehicle.nextStop?.stopId != stopID { vehicle.bearing = nil }
+                vehicle.coordinate = stop.coordinate; vehicle.accuracy = "prediction-stop"
+                vehicle.status = "Due at \(stop.name)"; vehicle.stopName = stop.name
+                vehicle.reportedAt = row.predictionReportedAt; vehicle.reportedAtSeconds = time.timeIntervalSince1970
+            }
+            vehicle.nextStop = stop
+            vehicle.directionLabel = row.direction ?? vehicle.directionLabel
+            reports[id] = vehicle
+        }
+        return Array(reports.values)
     }
     private func segmentCoordinates(_ segment: TransitNetwork.Segment) -> [CLLocationCoordinate2D] {
-        segment.points.compactMap { pair in
+        pathCoordinates(segment.points)
+    }
+    private func pathCoordinates(_ points: [[Double]]) -> [CLLocationCoordinate2D] {
+        points.compactMap { pair in
             pair.count == 2 ? CLLocationCoordinate2D(latitude: pair[0], longitude: pair[1]) : nil
         }
+    }
+    @MapContentBuilder private func trackingPaths(_ trip: VehicleTrip, vehicle: LiveVehicle) -> some MapContent {
+        let paths = trip.segments ?? []
+        let color = vehicle.mode == .bus ? Theme.blue : SubwayBadge.color(vehicle.line, reported: trip.routeColor)
+        ForEach(paths.indices, id: \.self) { i in
+            MapPolyline(coordinates: pathCoordinates(paths[i])).stroke(.white, style: railStroke(width: 9))
+        }
+        ForEach(paths.indices, id: \.self) { i in
+            MapPolyline(coordinates: pathCoordinates(paths[i])).stroke(color, style: railStroke(width: 6))
+        }
+        ForEach(trip.stops ?? [], id: \.sequence) { stop in
+            if let at = stop.coordinate {
+                Annotation(stop.name, coordinate: CLLocationCoordinate2D(latitude: at.latitude, longitude: at.longitude)) {
+                    Circle().fill(.white).overlay { Circle().strokeBorder(color, lineWidth: 2) }.frame(width: 9, height: 9)
+                }.annotationTitles(.hidden)
+            }
+        }
+    }
+    private func fitTrip(_ trip: VehicleTrip) -> Bool {
+        let coordinates = (trip.stops ?? []).compactMap(\.coordinate) + [trip.position?.coordinate].compactMap { $0 }
+        let points = (trip.segments ?? []).flatMap(pathCoordinates) + coordinates.map {
+            CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude)
+        }
+        guard let south = points.map(\.latitude).min(), let north = points.map(\.latitude).max(),
+              let west = points.map(\.longitude).min(), let east = points.map(\.longitude).max() else { return false }
+        camera = .region(MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: (north + south) / 2, longitude: (west + east) / 2),
+            span: MKCoordinateSpan(latitudeDelta: max(0.008, (north - south) * 1.8), longitudeDelta: max(0.008, (east - west) * 1.45))))
+        return true
     }
     private func railStroke(width: CGFloat) -> StrokeStyle {
         StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round)
@@ -159,7 +308,7 @@ struct JourneyMap: View {
     }
     private func liveCaption(_ mode: TravelMode, now: Date) -> some View {
         let count = visibleVehicles(at: now).count
-        let label = mode == .bus ? "\(count) buses with GPS" : "\(count) train station estimates"
+        let label = mode == .bus ? "\(count) buses with GPS" : "MTA station reports and arrival estimates"
         let note = vehicleError ?? (mode == .bus && snapshot?.feedStatus.busVehicles?.stale == true ? "Bus GPS unavailable" : label)
         return Text(note).font(.caption2.weight(.semibold)).foregroundStyle(Theme.ink)
             .padding(9).background(.regularMaterial, in: Capsule()).padding(9)
@@ -230,21 +379,57 @@ private struct VehicleMapPin: View {
 }
 private struct VehicleReportView: View {
     let vehicle: LiveVehicle
+    let current: Bool
+    let trip: VehicleTrip?
+    let error: Bool
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 18) {
-                Label("\(vehicle.mode == .bus ? "Bus" : "Train") \(vehicle.line)", systemImage: vehicle.mode.symbol).font(.title.bold())
-                Text(vehicle.accuracyLabel).font(.headline).foregroundStyle(Theme.green)
-                Text(vehicle.status).font(.subheadline)
-                if let direction = vehicle.directionLabel { Text(direction).font(.subheadline).foregroundStyle(Theme.secondary) }
-                Text("Reported \(vehicle.reportedDate.formatted(date: .omitted, time: .standard)) · \(max(0, Int(Date().timeIntervalSince(vehicle.reportedDate))))s ago").font(.subheadline).foregroundStyle(Theme.secondary)
-                if vehicle.accuracy != "gps" { Text("This marker uses a station location from the live MTA report. It is not an exact position between stations.").font(.subheadline).foregroundStyle(Theme.secondary) }
-                Text(vehicle.source).font(.caption).foregroundStyle(Theme.secondary)
-                Spacer()
-            }.padding(24).navigationTitle("Vehicle report").navigationBarTitleDisplayMode(.inline)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(current ? vehicle.accuracyLabel + " · " + vehicle.status : "MTA live arrival predictions")
+                        .font(.subheadline).foregroundStyle(Theme.secondary)
+                    if let direction = trip?.direction ?? vehicle.directionLabel {
+                        Text(direction).font(.caption).foregroundStyle(Theme.secondary)
+                    }
+                    if let trip, trip.status == .live {
+                        stopList(trip.stops ?? [])
+                        if trip.segments?.isEmpty != false { Text("Route path unavailable.").font(.caption).foregroundStyle(Theme.secondary) }
+                    } else if trip?.status == .changed {
+                        Text("MTA reported a change to this trip.").font(.subheadline)
+                    } else if trip?.status == .unavailable || vehicle.trackingId == nil || error {
+                        Text("Upcoming live stops are unavailable.").font(.subheadline)
+                    } else {
+                        ProgressView("Checking upcoming stops…")
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 20).padding(.vertical, 7)
+            }
+                .navigationTitle("\(vehicle.mode == .bus ? "Bus" : "Train") \(vehicle.line)").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-        }.presentationDetents([.medium]).presentationDragIndicator(.visible)
+        }.presentationDetents([.height(255), .large]).presentationDragIndicator(.visible)
+            .presentationBackgroundInteraction(.enabled(upThrough: .height(255)))
+    }
+    private func stopList(_ stops: [VehicleTrip.Stop]) -> some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            LazyVStack(alignment: .leading, spacing: 0) {
+                Text("Upcoming stops").font(.caption.weight(.semibold)).accessibilityAddTraits(.isHeader).padding(.bottom, 5)
+                ForEach(stops, id: \.sequence) { stop in
+                    HStack(spacing: 10) {
+                        Circle().fill(Theme.mode(vehicle.mode)).frame(width: 7, height: 7).accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(stop.name).font(.subheadline.weight(.semibold))
+                            if stop.sequence == stops.first?.sequence {
+                                Text("Next stop").font(.caption2).foregroundStyle(Theme.secondary)
+                            }
+                        }
+                        Spacer(minLength: 4)
+                        Text(TransitArrival.label(arrival: stop.arrivalTime, departure: stop.departureTime, now: context.date))
+                            .font(.subheadline.weight(.semibold)).monospacedDigit().foregroundStyle(Theme.green)
+                    }.frame(minHeight: 43)
+                    Divider()
+                }
+            }
+        }
     }
 }
 

@@ -240,13 +240,28 @@ public struct TransitDeparture: Codable, Identifiable, Sendable {
     public var id: String
     public var mode: TravelMode
     public var line: String
+    public var trackingId: String? = nil
     public var stationId: String? = nil
     public var stop: Place
     public var metersAway: Double
+    public var arrivalTime: String? = nil
     public var departureTime: String
     public var direction: String?
     public var routeColor: String?
     public var predictionReportedAt: String
+}
+public enum TransitArrival {
+    public static func date(_ value: String) -> Date? {
+        (try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(value))
+            ?? (try? Date.ISO8601FormatStyle().parse(value))
+    }
+
+    public static func label(arrival: String?, departure: String, now: Date) -> String {
+        guard let arrives = date(arrival ?? departure), let leaves = date(departure) else { return "Unavailable" }
+        if leaves < now { return "Departed" }
+        let seconds = arrives.timeIntervalSince(now)
+        return seconds < 60 ? "Due" : "\(Int(ceil(seconds / 60))) min"
+    }
 }
 public struct TransitStation: Codable, Identifiable, Sendable {
     public var id: String
@@ -266,10 +281,13 @@ public struct LiveVehicle: Codable, Identifiable, Sendable {
     public var id: String
     public var mode: TravelMode
     public var line: String
+    public var trackingId: String? = nil
     public var coordinate: Coordinate
     public var accuracy: String
     public var status: String
     public var stopName: String?
+    public var nextStop: VehicleStopPrediction? = nil
+    public var positionReport: VehiclePositionReport? = nil
     public var bearing: Double?
     public var bearingSource: String? = nil
     public var directionLabel: String? = nil
@@ -279,7 +297,81 @@ public struct LiveVehicle: Codable, Identifiable, Sendable {
     public var routeColor: String?
     public var source: String
     public var reportedDate: Date { Date(timeIntervalSince1970: reportedAtSeconds) }
-    public var accuracyLabel: String { accuracy == "gps" ? "Reported GPS" : "Station estimate" }
+
+    public init(predicted departure: TransitDeparture, reportedDate: Date) {
+        id = departure.trackingId ?? departure.id
+        trackingId = departure.trackingId
+        mode = departure.mode
+        line = departure.line
+        coordinate = departure.stop.coordinate
+        accuracy = "prediction-stop"
+        status = "Due at \(departure.stop.name)"
+        stopName = departure.stop.name
+        directionLabel = departure.direction
+        reportedAt = departure.predictionReportedAt
+        sourceTimestamp = departure.predictionReportedAt
+        reportedAtSeconds = reportedDate.timeIntervalSince1970
+        routeColor = departure.routeColor
+        source = "MTA subway arrival predictions"
+    }
+
+    public var accuracyLabel: String {
+        switch accuracy {
+        case "gps": "MTA GPS report"
+        case "reported-stop": "MTA station report"
+        case "prediction-stop": "MTA arrival estimate"
+        default: "MTA next-stop report"
+        }
+    }
+    public func isDue(at now: Date) -> Bool {
+        guard mode == .subway, let stop = nextStop, let date = TransitArrival.date(stop.reportedAt),
+              now.timeIntervalSince(date) <= 180,
+              accuracy == "prediction-stop" || positionReport?.stopId == stop.stopId else { return false }
+        return TransitArrival.label(arrival: stop.arrivalTime, departure: stop.departureTime, now: now) == "Due"
+    }
+}
+public struct VehicleStopPrediction: Codable, Sendable {
+    public var stopId: String
+    public var name: String
+    public var coordinate: Coordinate
+    public var arrivalTime: String?
+    public var departureTime: String
+    public var reportedAt: String
+
+    public init(departure: TransitDeparture, stopId: String) {
+        self.stopId = stopId
+        name = departure.stop.name
+        coordinate = departure.stop.coordinate
+        arrivalTime = departure.arrivalTime
+        departureTime = departure.departureTime
+        reportedAt = departure.predictionReportedAt
+    }
+}
+public struct VehiclePositionReport: Codable, Sendable {
+    public var accuracy: String
+    public var stopId: String?
+    public var stopName: String?
+    public var coordinate: Coordinate
+    public var reportedAt: String
+}
+public struct VehicleTrip: Codable, Sendable {
+    public struct Stop: Codable, Identifiable, Sendable {
+        public var id: String
+        public var sequence: Int
+        public var name: String
+        public var coordinate: Coordinate?
+        public var arrivalTime: String
+        public var departureTime: String
+    }
+    public enum Status: String, Codable, Sendable { case live, changed, unavailable }
+    public var status: Status
+    public var line: String?
+    public var direction: String?
+    public var routeColor: String?
+    public var stops: [Stop]?
+    public var segments: [[[Double]]]?
+    public var reportedAt: String?
+    public var position: LiveVehicle?
 }
 public struct VehicleSnapshot: Codable, Sendable {
     public var vehicles: [LiveVehicle]

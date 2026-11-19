@@ -28,6 +28,15 @@
     <div class="live-board"></div>
   </div>
 </section>
+<section id="vehicle-tracker" aria-labelledby="tracker-title" hidden>
+  <header class="tracker-header">
+    <span class="tracker-badge" aria-hidden="true"></span>
+    <div><h2 id="tracker-title"></h2><p class="tracker-source"></p></div>
+    <button type="button" class="live-icon" data-close-tracker aria-label="Close vehicle details"><span data-icon="close"></span></button>
+  </header>
+  <p class="tracker-message" role="status"></p>
+  <ol class="tracker-stops" aria-label="Upcoming stops" tabindex="0"></ol>
+</section>
 <section class="planner" aria-label="Plan your trip"><div class="search-card">
 <button class="place-row" data-place="origin" aria-label="Change start"><span class="origin-dot"></span><span><small>FROM</small><strong id="origin-label">Current location</strong></span><span class="edit-icon" data-icon="search"></span></button><div class="search-divider"></div><button class="swap" data-action="swap" aria-label="Swap start and destination"><span data-icon="swap"></span></button>
 <button class="place-row" data-place="destination" aria-label="Change destination"><span class="destination-dot"></span><span><small>TO</small><strong id="destination-label">Choose a destination</strong></span><span class="edit-icon" data-icon="search"></span></button>

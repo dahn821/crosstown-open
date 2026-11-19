@@ -38,6 +38,13 @@ public actor LiveRoutingClient {
         if mode == .subway { components.queryItems?.append(URLQueryItem(name: "network", value: "1")) }
         return try await fetch(URLRequest(url: components.url!), as: VehicleSnapshot.self)
     }
+    public func vehicleTrip(id: String) async throws -> VehicleTrip {
+        var components = URLComponents(url: endpoint("vehicle-trip"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "id", value: id)]
+        var request = URLRequest(url: components.url!)
+        request.timeoutInterval = 15
+        return try await fetch(request, as: VehicleTrip.self)
+    }
     public func departures(near coordinate: Coordinate, mode: TravelMode? = nil, stop: String? = nil, line: String? = nil) async throws -> TransitDepartures {
         var components = URLComponents(url: endpoint("transit"), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "lat", value: String(coordinate.latitude)), URLQueryItem(name: "lon", value: String(coordinate.longitude))]

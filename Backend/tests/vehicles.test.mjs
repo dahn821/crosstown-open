@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {FeedStore} from '../feeds.mjs';
 import {vehicleQuery,vehicleSnapshot,vehicleDirection} from '../vehicles.mjs';
+import {vehicleTrip,vehicleTripQuery} from '../vehicle-trip.mjs';
+import {trackingId} from '../trip-reports.mjs';
+import {busTripSegments} from '../bus-trip-shapes.mjs';
 const now=Date.now(),seconds=Math.floor(now/1000);
 test('direction arrows follow reported GPS or actual stop order, including reverse trips and terminals',()=>{
  const stops={a:{name:'A',latitude:40.7,longitude:-74},b:{name:'B',latitude:40.71,longitude:-74},c:{name:'C',latitude:40.71,longitude:-73.99}};
@@ -94,4 +97,64 @@ test('vehicle provider failures never expose the private credential in source st
  await s.refreshBusVehicles();
  assert.equal(s.status().busVehicles.error,'Bus GPS positions could not be refreshed.');
  assert(!JSON.stringify(s.status()).includes(key));
+});
+test('trip details and the board share arrival time, keeping a due train selectable through its station dwell',async()=>{
+ const stops={oldN:{name:'Old station',latitude:40.74,longitude:-73.982},
+  '632N':{name:'33 St',latitude:40.746,longitude:-73.982},
+  skipN:{name:'Skipped station',latitude:40.75,longitude:-73.981},
+  nextN:{name:'Next station',latitude:40.76,longitude:-73.982}};
+ const s=new FeedStore({tripIndex:{stops},subwayShapeData:{'6..N01R':[[40.74,-73.982],[40.746,-73.982],[40.751,-73.981],[40.76,-73.982]]}});
+ const trip={tripId:'track_6..N01R',routeId:'6',startDate:'20261119'};
+ const entity={tripUpdate:{trip,stopTimeUpdate:[
+  {stopId:'oldN',departure:{time:seconds-10}},
+  {stopId:'632N',arrival:{time:seconds-2},departure:{time:seconds+65}},
+  {stopId:'skipN',arrival:{time:seconds+120},scheduleRelationship:1},
+  {stopId:'nextN',arrival:{time:seconds+180}}
+ ]}};
+ const position={vehicle:{trip,timestamp:seconds-10,stopId:'oldN',currentStatus:2}};
+ s.entries.set('gtfs',{sourceTimestamp:now,message:{entity:[position,entity]}});
+ const board=s.departures([{gtfsId:'nyct:632N',name:'33 St',lat:40.746,lon:-73.982,distance:0}],now);
+ const [marker]=vehicleSnapshot(s,{now}).vehicles;
+ assert.equal(marker.trackingId,board[0].trackingId);
+ assert.equal(marker.accuracy,'prediction-stop');
+ assert.equal(marker.nextStop.stopId,'632N');
+ assert.equal(marker.positionReport.stopId,'oldN');
+ assert.equal(marker.nextStop.arrivalTime,board[0].arrivalTime);
+ assert.equal(marker.nextStop.departureTime,board[0].departureTime);
+ const query=vehicleTripQuery(new URLSearchParams({id:marker.trackingId}));
+ const details=await vehicleTrip(s,query,now);
+ assert.equal(details.status,'live');
+ assert.deepEqual(details.stops.map(stop=>stop.name),['33 St','Next station']);
+ assert.equal(details.stops[0].arrivalTime,board[0].arrivalTime);
+ assert.equal(details.position.accuracy,'prediction-stop');
+ assert.deepEqual(details.segments,[[[40.746,-73.982],[40.751,-73.981],[40.76,-73.982]]]);
+ s.entries.get('gtfs').message.entity=[entity];
+ const [estimated]=vehicleSnapshot(s,{now}).vehicles;
+ assert.equal(estimated.trackingId,marker.trackingId);
+ assert.deepEqual(estimated.coordinate,marker.coordinate);
+ assert.equal(vehicleSnapshot(s,{now:now+66000}).vehicles.length,0);
+ entity.tripUpdate.trip.scheduleRelationship=3;
+ assert.equal((await vehicleTrip(s,query,now)).status,'changed');
+});
+test('vehicle tracking rejects unsupported feeds and preserves the trip service date',async()=>{
+ const parse=id=>vehicleTripQuery(new URLSearchParams({id}));
+ assert.throws(()=>parse('bad'),{status:400});
+ assert.throws(()=>parse(trackingId('unknown',{tripId:'ok'})),{status:400});
+ const s=store(),entry=s.entries.get('gtfs');
+ entry.message.entity.push({tripUpdate:{trip:{tripId:'train-trip',routeId:'6',startDate:'20261119'},
+  stopTimeUpdate:[{stopId:'632N',arrival:{time:seconds+60}}]}});
+ const wrongDay=trackingId('gtfs',{tripId:'train-trip',startDate:'20261120'});
+ assert.deepEqual(await vehicleTrip(s,parse(wrongDay),now),{status:'unavailable'});
+});
+test('the remaining bus path clips the route shape at GPS and follows turns in upcoming stop order',()=>{
+ const a=[40.74,-73.99],b=[40.746,-73.99],turn=[40.746,-73.98],c=[40.75,-73.98];
+ const data={
+  stops:new Map([['2',{lat:b[0],lon:b[1]}],['3',{lat:c[0],lon:c[1]}]]),
+  groups:[{id:'0',points:[[a,b,turn,c]]}],points:[]
+ };
+ const gps={latitude:40.744,longitude:-73.99};
+ const segments=busTripSegments(data,0,[{stopId:'2'},{stopId:'3'}],gps);
+ assert.equal(segments.length,2);
+ assert(Math.abs(segments[0][0][0]-gps.latitude)<0.000001);
+ assert.deepEqual(segments[1],[b,turn,c]);
 });

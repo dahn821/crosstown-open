@@ -144,6 +144,7 @@ struct TransitBoard: View {
             JourneyMap(route: nil, origin: model.origin, destination: nil, apiBaseURLString: model.apiBaseURLString,
                        liveMode: mode, busStops: busStops, selectedLine: selectedLine,
                        highlightedStations: Set([activeStation?.id].compactMap { $0 }),
+                       stationPredictions: mode == .subway ? arrivals.filter { $0.stationId == activeStation?.id } : [],
                        onCenterChange: { next in
                            if center != next { focus = nil; selectedStop = nil }
                            center = next
@@ -246,7 +247,6 @@ struct TransitBoard: View {
         }.padding(.vertical, 4).accessibilityLabel("Nearby transit stops")
     }
     private func departureRow(_ departure: TransitDeparture, now: Date) -> some View {
-        let seconds = (transitDate(departure.departureTime) ?? now).timeIntervalSince(now)
         let age = max(0, Int(now.timeIntervalSince(transitDate(departure.predictionReportedAt) ?? now)))
         return HStack(alignment: .top, spacing: 12) {
             if departure.mode == .subway {
@@ -263,8 +263,8 @@ struct TransitBoard: View {
             }
             Spacer(minLength: 4)
             VStack(alignment: .trailing, spacing: 5) {
-                Text(seconds < -30 ? "Departed" : seconds < 60 ? "Due" : "\(Int(ceil(seconds / 60))) min").font(.headline).foregroundStyle(Theme.green)
-                Text(transitClock(departure.departureTime)).font(.caption).foregroundStyle(Theme.secondary)
+                Text(TransitArrival.label(arrival: departure.arrivalTime, departure: departure.departureTime, now: now)).font(.headline).foregroundStyle(Theme.green)
+                Text(transitClock(departure.arrivalTime ?? departure.departureTime)).font(.caption).foregroundStyle(Theme.secondary)
             }
         }.padding(.vertical, 8)
     }
@@ -287,10 +287,9 @@ struct TransitBoard: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 5) {
                             ForEach(displayedTrains(groups[direction] ?? [])) { departure in
-                                let seconds = (transitDate(departure.departureTime) ?? now).timeIntervalSince(now)
                                 HStack(spacing: 4) {
                                     SubwayBadge(line: departure.line, reportedColor: departure.routeColor, size: 18)
-                                    Text(seconds < 60 ? "Due" : "\(Int(ceil(seconds / 60))) min").font(.caption).monospacedDigit()
+                                    Text(TransitArrival.label(arrival: departure.arrivalTime, departure: departure.departureTime, now: now)).font(.caption).monospacedDigit()
                                 }.padding(.horizontal, 5).padding(.vertical, 3)
                                     .background(.white, in: Capsule())
                             }
@@ -324,8 +323,7 @@ struct TransitBoard: View {
                         Text(first.direction ?? "Live arrival").font(.caption).foregroundStyle(Theme.secondary)
                         Spacer(minLength: 4)
                         ForEach(trips.prefix(3)) { departure in
-                            let seconds = (transitDate(departure.departureTime) ?? now).timeIntervalSince(now)
-                            Text(seconds < 60 ? "Due" : "\(Int(ceil(seconds / 60)))m")
+                            Text(TransitArrival.label(arrival: departure.arrivalTime, departure: departure.departureTime, now: now))
                                 .font(.caption.monospacedDigit()).padding(5).background(.white, in: Capsule())
                         }
                     }
@@ -356,8 +354,7 @@ struct TransitBoard: View {
 }
 
 private func transitDate(_ value: String) -> Date? {
-    let parser = ISO8601DateFormatter(); parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return parser.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+    TransitArrival.date(value)
 }
 private func transitClock(_ value: String) -> String {
     guard let date = transitDate(value) else { return "—" }

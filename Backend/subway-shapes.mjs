@@ -9,7 +9,6 @@ const meters=(a,b)=>Math.hypot((a[0]-b[0])*111200,(a[1]-b[1])*84200);
 const position=stop=>[stop.latitude,stop.longitude];
 const baseLine=line=>String(line||'').replace(/^([567F])X$/,'$1');
 const rounded=point=>point.map(value=>Math.round(value*1e5)/1e5);
-const maxSnapMeters=85;
 
 function projection(point,a,b){
   const dx=(b[0]-a[0])*111200,dy=(b[1]-a[1])*84200;
@@ -32,7 +31,7 @@ function simplify(points,start=0,end=points.length-1,result=[points[start]]){
   return result;
 }
 
-export function createSubwayGeometry(stops={},shapes=subwayShapes){
+export function createTripGeometry(stops,shapes,{maxSnapMeters=85,allowOtherLines=true,detourFactor=2.1}={}){
   const prepared=new Map(),byLine=new Map(),resolved=new Map();
   const entries=Object.entries(shapes).filter(([,points])=>points.length>=2);
   for(const entry of entries){
@@ -57,7 +56,8 @@ export function createSubwayGeometry(stops={},shapes=subwayShapes){
     const point=position(stop),key=point.join(',');
     if(shape.snaps.has(key))return shape.snaps.get(key);
     const [lat,lon]=point,[south,west,north,east]=shape.bbox;
-    if(lat<south-.0008||lat>north+.0008||lon<west-.0011||lon>east+.0011)return null;
+    const latitudeMargin=maxSnapMeters/111200,longitudeMargin=maxSnapMeters/84200;
+    if(lat<south-latitudeMargin||lat>north+latitudeMargin||lon<west-longitudeMargin||lon>east+longitudeMargin)return null;
     let best=null,bestError=maxSnapMeters**2;
     for(let index=0;index<shape.points.length-1;index++){
       const a=shape.points[index],b=shape.points[index+1],p=projection(point,a,b);
@@ -73,7 +73,7 @@ export function createSubwayGeometry(stops={},shapes=subwayShapes){
     const shape=shapeFor(entry),a=snap(shape,from),b=snap(shape,to);
     if(!a||!b||Math.max(a.error,b.error)>(shared?50:maxSnapMeters))return null;
     const span=Math.abs(b.along-a.along),forward=b.along>a.along;
-    if(span<5||span>Math.max(direct+260,direct*2.1))return null;
+    if(span<5||span>Math.max(direct+260,direct*detourFactor))return null;
     const start=forward?a:b,end=forward?b:a,sign=forward?1:-1;
     const before=snap(shape,previous),after=snap(shape,next);
     const aligned=(before&&(a.along-before.along)*sign>5?1:0)+(after&&(after.along-b.along)*sign>5?1:0);
@@ -94,7 +94,8 @@ export function createSubwayGeometry(stops={},shapes=subwayShapes){
     }
     if(!best){
       const route=baseLine(line);
-      for(const candidates of [byLine.get(route)||[],entries]){
+      const sameLine=byLine.get(route)||[];
+      for(const candidates of allowOtherLines?[sameLine,entries]:[sameLine]){
         const shared=candidates===entries;
         for(const entry of candidates){
           const candidate=match(entry,from,to,previous,next,direct,shared);
@@ -114,6 +115,10 @@ export function createSubwayGeometry(stops={},shapes=subwayShapes){
     return points;
   }
   return find;
+}
+
+export function createSubwayGeometry(stops={},shapes=subwayShapes){
+  return createTripGeometry(stops,shapes);
 }
 
 export function subwayJourneyPoints(store,{line,tripId,stopIds},{requireShape=false}={}){

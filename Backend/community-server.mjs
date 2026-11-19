@@ -3,6 +3,7 @@ import {createPlaceSearch} from './places.mjs';
 import {route,configureRoutingData,validateRequest} from './otp.mjs';
 import {createTransitousSearch} from './transitous.mjs';
 import {vehicleQuery,vehicleSnapshot} from './vehicles.mjs';
+import {vehicleTrip,vehicleTripQuery} from './vehicle-trip.mjs';
 import {ridePrediction,rideQuery} from './ride.mjs';
 import {bikeStationSnapshot} from './citi-bike.mjs';
 import {nearbySubwayBoard,stationRadius} from './subway-stations.mjs';
@@ -52,14 +53,21 @@ export function createCommunityAPI({lookup,restaurants,busKey='',subwayShapeData
    const url=new URL(request.url),pathname=url.pathname.replace(/^\/\.netlify\/functions\/api(?=\/)/,'/api');
    if(pathname==='/api/ready')return json({ready:true});
    if(pathname==='/api/places'&&request.method==='GET')return json(await places(url.searchParams.get('q')));
-   if(pathname==='/api/ride'&&request.method==='GET'){
-     const query=rideQuery(url.searchParams);
+   if((pathname==='/api/ride'||pathname==='/api/vehicle-trip')&&request.method==='GET'){
+     const tracking=pathname==='/api/vehicle-trip';
+     const query=(tracking?vehicleTripQuery:rideQuery)(url.searchParams);
+     const updates=[];
      if(Date.now()-(store.entries.get(query.feed)?.fetchedAt||0)>25000){
-       const update=query.mode==='bus'?store.refreshBus():store.refreshSubway(query.feed);
-       let timer;
-       await Promise.race([update,new Promise(resolve=>{timer=setTimeout(resolve,4500);timer.unref?.();})]).finally(()=>clearTimeout(timer));
+       updates.push(query.feed==='bus'?store.refreshBus():store.refreshSubway(query.feed));
      }
-     return json(ridePrediction(store,query));
+     if(tracking&&query.feed==='bus'&&Date.now()-(store.entries.get('busVehicles')?.fetchedAt||0)>25000){
+       updates.push(store.refreshBusVehicles());
+     }
+     if(updates.length){
+       let timer;
+       await Promise.race([Promise.allSettled(updates),new Promise(resolve=>{timer=setTimeout(resolve,4500);timer.unref?.();})]).finally(()=>clearTimeout(timer));
+     }
+     return json(tracking?await vehicleTrip(store,query):ridePrediction(store,query));
    }
    if(pathname==='/api/health'&&request.method==='GET'){
      await feeds();return json({service:'Crosstown',version:'0.3.0',router:{ready:true,message:'Community street routing with current MTA and Citi Bike checks.',engine:'MOTIS 2 / Transitous',mode:'community'},feeds:store.status(),coverage:'New York City, five boroughs',localSetupAvailable:false,community:{requestLimit:600,windowHours:24,source:'https://transitous.org/sources/'}});

@@ -4,6 +4,7 @@ import {icon} from './icons.mjs';
 import {defaults,labels,routeTitle,bikePaceKeys,bikePaces,linkedBikePaces} from './preferences.mjs';
 import {nyLocalInput,nyTimeToISO,timingPayload,timingLabel} from './timing.mjs';
 import {attachVehicleMap} from './vehicles.mjs';
+import {attachVehicleTracking} from './vehicle-tracks.mjs';
 import {attachLiveExplore} from './live-explore.mjs';
 import {attachMobileLayout} from './mobile-layout.mjs';
 import {CURRENT_LOCATION_ID,createCurrentLocationLookup} from './current-location.mjs';
@@ -14,7 +15,7 @@ const $=(s,root=document)=>root.querySelector(s),esc=s=>String(s??'').replace(/[
 const mins=n=>Math.ceil(n),money=c=>c===0?'Included':new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(c/100),clock=s=>s?new Date(s).toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'numeric',minute:'2-digit'}):'—';
 const state={origin:null,destination:null,location:{status:'idle'},preferences:defaults(),response:null,selected:0,loading:false,error:null,health:null,places:[],saved:[],modal:null,journey:null,timing:{mode:'now',time:null},travelMode:'all',mainView:'directions'};
 const sheet=$('#sheet'),app=$('#app'),preview=$('#journey-preview'),navigationPanel=$('#navigation-controls');
-let searchId=0,searchTimer,placeSearchId=0,toastTimer,map,layers,abort,vehicleMap,liveExplore,mobileLayout,navigationMarkers;
+let searchId=0,searchTimer,placeSearchId=0,toastTimer,map,layers,abort,vehicleMap,vehicleTracking,liveExplore,mobileLayout,navigationMarkers;
 const departureSelections={};let departureRequestKey="";
 const bikePaceStorage='crosstown.bikePaces.v1';
 try{Object.assign(state.preferences,bikePaces(JSON.parse(localStorage.getItem(bikePaceStorage))));}catch{}
@@ -86,8 +87,17 @@ function initMap(){
  }catch(e){console.warn('Vector map:',e.message);fallback();}
  L.control.zoom({position:'bottomright'}).addTo(map);layers=L.featureGroup().addTo(map);
  navigationMarkers=L.layerGroup().addTo(map);
- vehicleMap=attachVehicleMap({map,L,api,getRoute:()=>state.journey?.route||currentRoutes()[state.selected],onSnapshot:(view,result)=>liveExplore?.vehicleReport(view,result)});
- liveExplore=attachLiveExplore({map,L,api,vehicles:vehicleMap,getLocation:()=>state.origin?.coordinate});
+ const selectVehicle=vehicle=>{
+   if(state.journey?.navigator)return;
+   if(state.mainView==='directions')setMainView(vehicle.mode);
+   vehicleTracking.select(vehicle);
+ };
+ vehicleMap=attachVehicleMap({map,L,api,getRoute:()=>state.journey?.route||currentRoutes()[state.selected],
+   onSelect:selectVehicle,onSnapshot:(view,result)=>liveExplore?.vehicleReport(view,result)});
+ liveExplore=attachLiveExplore({map,L,api,vehicles:vehicleMap,getLocation:()=>state.origin?.coordinate,onSelect:selectVehicle});
+ vehicleTracking=attachVehicleTracking({map,L,api,findTrip:vehicleMap.findTrip,onReport:vehicleMap.setTrackingReport,onChange:id=>{
+   liveExplore.setTracking(Boolean(id));vehicleMap.setSelectedTrip(id);
+ }});
  mobileLayout=attachMobileLayout({map,onFit:()=>drawRoute()});
  map.on('dragstart',()=>{
   if(!state.journey?.navigator)return;
@@ -387,6 +397,7 @@ async function refreshDetail(){
 }
 function setMainView(view){
  if(state.mainView===view||state.journey?.navigator)return;
+ vehicleTracking.close();
  if(state.journey)closeJourney({focus:false});
  state.mainView=view;app.dataset.mainView=view;
  for(const b of document.querySelectorAll('[data-live-view]'))b.setAttribute('aria-pressed',String(b.dataset.liveView===view));

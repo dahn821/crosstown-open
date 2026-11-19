@@ -2,6 +2,7 @@ import bindings from 'gtfs-realtime-bindings';
 import fs from 'node:fs';
 import {subwayStations,stationStopID,subwayDirection} from './subway-stations.mjs';
 import {createSubwayGeometry} from './subway-shapes.mjs';
+import {stopPrediction,tripReportTime,freshPrediction,canceledTrip,trackingId} from './trip-reports.mjs';
 const rt=bindings.transit_realtime;
 let defaultTripIndex={};
 try{defaultTripIndex=JSON.parse(fs.readFileSync(new URL('./data/trip-index.json',import.meta.url),'utf8'));}catch{}
@@ -23,6 +24,7 @@ const asNumber=x=>x==null?0:Number(x.toString());
 const epoch=x=>typeof x==='number'?x*1000:typeof x==='string'?Date.parse(x):0;
 // Bus Time adds agency prefixes. GTFS's trailing + means SBS; keep it distinct from local service.
 export const busID=id=>String(id??'').replace(/^(?:MTA(?:[ _](?:NYCT|MTABC|BUS))?|MTABC|NYCT)[_ :]+/i,'').replace(/\+$/,'-SBS').replace(/[^a-z0-9]/gi,'').toUpperCase();
+export const busLineName=id=>String(id??'').replace(/^(?:MTA(?:[ _](?:NYCT|MTABC|BUS))?|MTABC|NYCT)[_ :]+/i,'').replace(/\+$/,'-SBS');
 const bareStopId=id=>String(id).split(':').at(-1);
 export const busStopID=id=>busID(bareStopId(id));
 export function busStopName(value){
@@ -139,24 +141,25 @@ export class FeedStore {
       if((!subwayFeeds.includes(name)&&name!=='bus')||this.freshness(name).stale)continue;
       const mode=name==='bus'?'bus':'subway';if(focusMode&&mode!==focusMode||mode==='bus'&&!this.busKey)continue;
       for(const entity of entry.message?.entity||[]){
-        const update=entity.tripUpdate,trip=update?.trip;if(entity.isDeleted||!trip||[3,7].includes(trip.scheduleRelationship))continue;
+        const update=entity.tripUpdate,trip=update?.trip;if(!trip||canceledTrip(entity))continue;
+        const reportedAt=tripReportTime(update,entry);
+        if(!freshPrediction(reportedAt,now))continue;
         const calls=update.stopTimeUpdate||[];
         for(const [index,call] of calls.entries()){
-          if([1,2].includes(call.scheduleRelationship))continue;
-          const stop=nearby.get(key(mode,call.stopId)),time=asNumber(call.departure?.time||call.arrival?.time)*1000;
-          if(!stop||time<now||time>now+90*60000)continue;
+          const stop=nearby.get(key(mode,call.stopId)),prediction=stopPrediction(call);
+          if(!stop||!prediction||prediction.departure<now||prediction.arrival>now+90*60000)continue;
           const route=stop.routes?.find(r=>mode==='bus'?busID(r.shortName)===busID(trip.routeId):r.shortName===trip.routeId);
-          const line=route?.shortName||String(trip.routeId||'').replace(/^(?:MTA NYCT|MTABC)_/,'').replace(/\+$/,'-SBS');
+          const line=route?.shortName||(mode==='bus'?busLineName(trip.routeId):String(trip.routeId||''));
           if(focusLine&&(mode==='bus'?busID(line)!==busID(focusLine):line!==focusLine))continue;
-          const id=[name,trip.tripId,stop.gtfsId,time].join('|');
+          const id=[name,trip.tripId,stop.gtfsId,prediction.departure].join('|');
           const nextCall=mode==='bus'?calls.slice(index+1).find(item=>![1,2].includes(item.scheduleRelationship)):null;
           const next=nextCall&&(stopByKey.get(key(mode,nextCall.stopId))||this.busStops.get(busStopID(nextCall.stopId)));
           const direction=mode==='subway'?subwayDirection(call.stopId,this.subwayCatalog.metadata.get(stationStopID(call.stopId))):next?'Toward '+busStopName(next.name):null;
           const routeColor=route?.color||(mode==='subway'?this.tripIndex.routes?.[line]?.route_color:null);
-          found.set(id,{id,mode,line,stationId:stop.stationId,stop:{id:stop.gtfsId,name:stop.name,neighborhood:'New York City',coordinate:{latitude:stop.lat,longitude:stop.lon},selectable:true},metersAway:stop.distance,departureTime:new Date(time).toISOString(),direction,routeColor:routeColor||null,predictionReportedAt:new Date(entry.sourceTimestamp).toISOString()});
+          found.set(id,{id,mode,line,trackingId:trackingId(name,trip),stationId:stop.stationId,stop:{id:stop.gtfsId,name:stop.name,neighborhood:'New York City',coordinate:{latitude:stop.lat,longitude:stop.lon},selectable:true},metersAway:stop.distance,arrivalTime:new Date(prediction.arrival).toISOString(),departureTime:new Date(prediction.departure).toISOString(),direction,routeColor:routeColor||null,predictionReportedAt:new Date(reportedAt).toISOString()});
         }
       }
     }
-    const counts=new Map(),modeCounts=new Map();return [...found.values()].sort((a,b)=>Date.parse(a.departureTime)-Date.parse(b.departureTime)||a.metersAway-b.metersAway).filter(d=>{const k=d.mode+'|'+d.stop.id+'|'+d.line,n=counts.get(k)||0,m=modeCounts.get(d.mode)||0;if(n>=3||m>=limit)return false;counts.set(k,n+1);modeCounts.set(d.mode,m+1);return true;});
+    const counts=new Map(),modeCounts=new Map();return [...found.values()].sort((a,b)=>a.arrivalTime.localeCompare(b.arrivalTime)||a.metersAway-b.metersAway).filter(d=>{const k=d.mode+'|'+d.stop.id+'|'+d.line,n=counts.get(k)||0,m=modeCounts.get(d.mode)||0;if(n>=3||m>=limit)return false;counts.set(k,n+1);modeCounts.set(d.mode,m+1);return true;});
   }
 }
