@@ -80,9 +80,9 @@ export function createTripGeometry(stops,shapes,{maxSnapMeters=85,allowOtherLine
     const score=a.error+b.error+(span-direct)*.04+(forward?0:2)-aligned*12;
     return {shape,start,end,forward,score};
   }
-  function find(line,tripId,from,to,{previous,next,shapeId}={}){
+  function find(line,tripId,from,to,{previous,next,shapeId,strict=false}={}){
     if(!stops[from]||!stops[to])return null;
-    const key=[line,tripId?.split('_').at(-1),shapeId,from,to,previous,next].join('|');
+    const key=[line,tripId?.split('_').at(-1),shapeId,from,to,previous,next,strict].join('|');
     if(resolved.has(key))return resolved.get(key);
     const direct=meters(position(stops[from]),position(stops[to]));
     const suffix=tripId?.split('_').at(-1),canonical=suffix?.replace(/X\d+$/,'R');
@@ -95,7 +95,7 @@ export function createTripGeometry(stops,shapes,{maxSnapMeters=85,allowOtherLine
     if(!best){
       const route=baseLine(line);
       const sameLine=byLine.get(route)||[];
-      for(const candidates of allowOtherLines?[sameLine,entries]:[sameLine]){
+      for(const candidates of allowOtherLines&&!strict?[sameLine,entries]:[sameLine]){
         const shared=candidates===entries;
         for(const entry of candidates){
           const candidate=match(entry,from,to,previous,next,direct,shared);

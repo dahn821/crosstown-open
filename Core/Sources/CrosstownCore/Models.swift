@@ -242,6 +242,8 @@ public struct TransitDeparture: Codable, Identifiable, Sendable {
     public var line: String
     public var trackingId: String? = nil
     public var stationId: String? = nil
+    public var estimateSource: String? = nil
+    public var isNextStop: Bool? = nil
     public var stop: Place
     public var metersAway: Double
     public var arrivalTime: String? = nil
@@ -287,6 +289,7 @@ public struct LiveVehicle: Codable, Identifiable, Sendable {
     public var status: String
     public var stopName: String?
     public var nextStop: VehicleStopPrediction? = nil
+    public var motion: TrainMotion? = nil
     public var positionReport: VehiclePositionReport? = nil
     public var bearing: Double?
     public var bearingSource: String? = nil
@@ -318,6 +321,7 @@ public struct LiveVehicle: Codable, Identifiable, Sendable {
     public var accuracyLabel: String {
         switch accuracy {
         case "gps": "MTA GPS report"
+        case "interpolated": "Estimated from live train reports"
         case "reported-stop": "MTA station report"
         case "prediction-stop": "MTA arrival estimate"
         default: "MTA next-stop report"
@@ -326,8 +330,31 @@ public struct LiveVehicle: Codable, Identifiable, Sendable {
     public func isDue(at now: Date) -> Bool {
         guard mode == .subway, let stop = nextStop, let date = TransitArrival.date(stop.reportedAt),
               now.timeIntervalSince(date) <= 180,
-              accuracy == "prediction-stop" || positionReport?.stopId == stop.stopId else { return false }
+              motion != nil || accuracy == "prediction-stop" || positionReport?.stopId == stop.stopId else { return false }
         return TransitArrival.label(arrival: stop.arrivalTime, departure: stop.departureTime, now: now) == "Due"
+    }
+}
+public struct TrainMotion: Codable, Sendable {
+    public var fromStopId: String
+    public var toStopId: String
+    public var startedAt: Double
+    public var arrivesAt: Double
+    public var expiresAt: Double
+    public var points: [[Double]]
+
+    public func location(at now: Date) -> (coordinate: Coordinate, bearing: Double)? {
+        let milliseconds = now.timeIntervalSince1970 * 1000
+        guard milliseconds <= expiresAt, arrivesAt > startedAt, points.count >= 2,
+              let last = points.last, last.count == 3 else { return nil }
+        let progress = min(1, max(0, (milliseconds - startedAt) / (arrivesAt - startedAt)))
+        let distance = progress * last[2]
+        let end = points.indices.dropFirst().first { points[$0].count == 3 && points[$0][2] >= distance } ?? points.count - 1
+        let a = points[end - 1], b = points[end]
+        guard a.count == 3, b.count == 3 else { return nil }
+        let fraction = b[2] > a[2] ? (distance - a[2]) / (b[2] - a[2]) : 0
+        let latitude = b[0] - a[0], longitude = b[1] - a[1]
+        let bearing = (atan2(longitude * 84200, latitude * 111200) * 180 / .pi + 360).truncatingRemainder(dividingBy: 360)
+        return (Coordinate(a[0] + latitude * fraction, a[1] + longitude * fraction), bearing)
     }
 }
 public struct VehicleStopPrediction: Codable, Sendable {
@@ -360,8 +387,8 @@ public struct VehicleTrip: Codable, Sendable {
         public var sequence: Int
         public var name: String
         public var coordinate: Coordinate?
-        public var arrivalTime: String
-        public var departureTime: String
+        public var arrivalTime: String?
+        public var departureTime: String?
     }
     public enum Status: String, Codable, Sendable { case live, changed, unavailable }
     public var status: Status
@@ -372,6 +399,7 @@ public struct VehicleTrip: Codable, Sendable {
     public var segments: [[[Double]]]?
     public var reportedAt: String?
     public var position: LiveVehicle?
+    public var estimateSource: String?
 }
 public struct VehicleSnapshot: Codable, Sendable {
     public var vehicles: [LiveVehicle]

@@ -1,3 +1,5 @@
+import {liveSubwayDepartures} from './subway-live.mjs';
+
 export const stationRadius=1200;
 export const platformID=id=>String(id||'').split(':').at(-1);
 export const stationStopID=id=>platformID(id).replace(/[NS]$/,'');
@@ -44,7 +46,9 @@ export function nearbySubwayBoard(store,coordinate,{stop,line}={},now=Date.now()
   }
   nearby.sort((a,b)=>a.metersAway-b.metersAway||a.name.localeCompare(b.name));
   const candidates=line?nearby:nearby.slice(0,4);
-  const departures=store.departures(candidates.flatMap(station=>station.platforms),now,{mode:'subway',line,limit:Infinity});
+  const departures=liveSubwayDepartures(store,candidates.flatMap(station=>station.platforms),now,line).map(row=>({
+    ...row,direction:subwayDirection(row.stop.id,catalog.metadata.get(stationStopID(row.stop.id)))
+  }));
   const active=new Set(departures.map(departure=>departure.stationId));
   const stations=candidates.filter(station=>selected||!line||active.has(station.id)||station.daytimeRoutes.has(localLine(line))).slice(0,4).map(({platforms,daytimeRoutes,...station})=>station);
   const included=new Set(stations.map(station=>station.id));

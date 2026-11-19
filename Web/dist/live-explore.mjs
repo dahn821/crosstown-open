@@ -27,7 +27,7 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect}){
   const railRenderer=L.canvas({pane:'subway-rails',padding:.2});
   const dockRenderer=L.canvas({padding:.2});
   const linesSeen={subway:new Set(),bus:new Set()};
-  let view='directions',data,network,focused,selectedStop,selectedLine='',pending,moveTimer,failure='',lineOptionsKey='',tracking=false;
+  let view='directions',data,network,focused,selectedStop,selectedLine='',pending,moveTimer,failure='',lineOptionsKey='',tracking=false,dragging=false,settleTimer;
   const showingTransit=()=>view==='subway'||view==='bus';
 
   function targetPoint(){
@@ -152,7 +152,7 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect}){
     const arrivals=view==='subway'?subwayTimes(timing):busTimes(timing);
     const empty=active?'No live arrivals reported at this stop.':data?
       (selectedLine?'Drag toward this line or choose All lines.':`No ${label}s within ¾ mile. Drag the map to explore.`):`Checking nearby ${label}s…`;
-    const message=failure||(stale?'Current MTA predictions are unavailable.':empty);
+    const message=failure||(stale?'Current MTA reports are unavailable.':empty);
     const scroll=body.scrollTop;
     const more=view==='subway'&&active&&!focused&&arrivals?`<button class="live-back" data-live-station="${esc(active.id)}">All departures ${icon('chevron')}</button>`:'';
     body.innerHTML=(focused?`<button class="live-back" data-live-back>‹ Nearby ${label}s</button>`:'')+
@@ -185,10 +185,11 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect}){
   }
   function queueBoard(){
     clearTimeout(moveTimer);pending?.abort();pending=null;
-    moveTimer=setTimeout(refresh,showingTransit()?260:420);
+    moveTimer=setTimeout(refresh,showingTransit()?120:260);
   }
   function reset(){
     data=null;network=null;focused=null;selectedStop=null;selectedLine='';failure='';
+    dragging=false;target.classList.remove('panning','settled');
     nearby.hidden=true;nearby.innerHTML='';
     pending?.abort();pending=null;clearTimeout(moveTimer);
     lines.clearLayers();stops.clearLayers();dockLayer.clearLayers();
@@ -196,6 +197,8 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect}){
   map.on('dragstart',()=>{
     if(!showingTransit()||tracking)return;
     vehicles.setStationPredictions([]);
+    dragging=true;
+    target.classList.remove('settled');
     focused=null;selectedStop=null;pending?.abort();pending=null;
     nearby.scrollLeft=0;
     clearTimeout(moveTimer);
@@ -204,6 +207,13 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect}){
   });
   map.on('moveend',()=>{
     target.classList.remove('panning');
+    if(dragging&&showingTransit()){
+      dragging=false;
+      target.classList.add('settled');
+      clearTimeout(settleTimer);
+      settleTimer=setTimeout(()=>target.classList.remove('settled'),300);
+      if(navigator.maxTouchPoints>0)navigator.vibrate?.(10);
+    }
     if(view==='bike')renderDocks();
     else if(view!=='directions'&&!focused)queueBoard();
   });
@@ -253,7 +263,7 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect}){
   return {
     setTracking(value){
       tracking=value;
-      if(tracking){pending?.abort();pending=null;clearTimeout(moveTimer);}
+      if(tracking){pending?.abort();pending=null;clearTimeout(moveTimer);vehicles.setStationPredictions([]);}
       else if(showingTransit())queueBoard();
     },
     setView(next){
@@ -265,7 +275,7 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect}){
       if(panel.hidden)return;
       heading.textContent=titles[view];
       count.textContent=view==='bike'?'Checking dock availability…':view==='subway'?'Drag the map to find stations':'Drag the map to find stops';
-      status.textContent=view==='bike'?'Citi Bike GBFS':view==='bus'?'MTA Bus Time GPS':'MTA station reports and arrival estimates';
+      status.textContent=view==='bike'?'Citi Bike GBFS':view==='bus'?'MTA Bus Time GPS':'Estimated from live train reports';
       body.innerHTML='<p class="live-empty">Loading live reports…</p>';
       panel.querySelector('.live-filter').hidden=view==='bike';
       panel.querySelector('.live-legend').hidden=view!=='bike';
@@ -287,7 +297,7 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect}){
       for(const {points,color} of corridors.values())L.polyline(points,{renderer:railRenderer,color,weight,opacity:.92,interactive:false}).addTo(lines);
       const qty=result?.vehicles?.length??0,bus=view==='bus';
       status.textContent=result?(bus&&result.feedStatus.busVehicles?.stale?'Bus GPS unavailable':bus?
-        `${qty} GPS positions${result.truncated?' · zoom in':''}`:'MTA station reports and arrival estimates'):'Vehicle reports unavailable';
+        `${qty} GPS positions${result.truncated?' · zoom in':''}`:'Estimated from live train reports'):'Vehicle reports unavailable';
       renderStops();updateLines();
     }
   };

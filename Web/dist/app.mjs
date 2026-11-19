@@ -1,5 +1,4 @@
 import * as L from 'leaflet';
-import {maplibreGL} from './vendor/maplibre-leaflet/leaflet-maplibre-gl.mjs';
 import {icon} from './icons.mjs';
 import {defaults,labels,routeTitle,bikePaceKeys,bikePaces,linkedBikePaces} from './preferences.mjs';
 import {nyLocalInput,nyTimeToISO,timingPayload,timingLabel} from './timing.mjs';
@@ -80,11 +79,11 @@ function initMap(){
  map=L.map('map',{zoomControl:false,attributionControl:true,minZoom:9,maxZoom:19}).setView(start?[start.latitude,start.longitude]:[40.768,-73.974],start?15:13);
  let fallbackStarted=false;
  const fallback=()=>{if(fallbackStarted)return;fallbackStarted=true;L.tileLayer('/tiles/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'}).on('load',()=>$('#map').dataset.ready='raster').addTo(map);};
- try{
+ void import('./vendor/maplibre-leaflet/leaflet-maplibre-gl.mjs').then(({maplibreGL})=>{
    const gl=maplibreGL({style:location.origin+'/basemap/styles/positron',attribution:'<a href="https://openfreemap.org">OpenFreeMap</a> © <a href="https://www.openmaptiles.org/">OpenMapTiles</a> © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',interactive:false}).addTo(map);
    gl.getMaplibreMap().on('idle',()=>$('#map').dataset.ready='vector');
    gl.getMaplibreMap().on('error',e=>{console.warn('Vector map:',e.error?.message);if(!$('#map').dataset.ready){map.removeLayer(gl);fallback();}});
- }catch(e){console.warn('Vector map:',e.message);fallback();}
+ }).catch(e=>{console.warn('Vector map:',e.message);fallback();});
  L.control.zoom({position:'bottomright'}).addTo(map);layers=L.featureGroup().addTo(map);
  navigationMarkers=L.layerGroup().addTo(map);
  const selectVehicle=vehicle=>{
@@ -464,6 +463,6 @@ function openLinkedBikePaces(){
 }
 openLinkedBikePaces();
 window.addEventListener('hashchange',openLinkedBikePaces);
-try{const [d,health]=await Promise.all([api('/places'),api('/health')]);state.places=d.places;state.health=health;if(health.router.mode==='community')map.attributionControl.addAttribution('<a href="https://transitous.org/sources/" target="_blank" rel="noopener">Transitous</a>');else state.destination??=d.places.find(p=>p.id==='ues')??d.places[1];renderRoutes();if(new URLSearchParams(location.search).get('setup')==='bus-time'&&state.health.localSetupAvailable)busSetup();await planTrip();}catch(e){state.loading=false;state.error=e.message;renderRoutes();}
+try{const [d,health]=await Promise.all([api('/places'),api('/health?feeds=0')]);state.places=d.places;state.health=health;if(health.router.mode==='community')map.attributionControl.addAttribution('<a href="https://transitous.org/sources/" target="_blank" rel="noopener">Transitous</a>');else state.destination??=d.places.find(p=>p.id==='ues')??d.places[1];renderRoutes();if(new URLSearchParams(location.search).get('setup')==='bus-time'&&state.health.localSetupAvailable)busSetup();await planTrip();}catch(e){state.loading=false;state.error=e.message;renderRoutes();}
 setInterval(()=>{updateFreshness();if(document.hidden)return;if(state.mainView==='directions'&&state.health?.router?.ready&&state.health.router.mode!=='community'&&!sheet.open&&!state.journey&&!state.loading&&state.origin)refreshTrip({quiet:true});},30000);
 window.addEventListener('resize',()=>{map?.invalidateSize();drawRoute(false);});

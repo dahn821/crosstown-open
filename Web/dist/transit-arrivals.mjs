@@ -1,3 +1,5 @@
+import {sampleTrack} from './track-position.mjs';
+
 const escape=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 
 export function arrivalLabel({arrivalTime,departureTime},now=Date.now()){
@@ -35,6 +37,7 @@ export function trainIsDue(vehicle,now=Date.now()){
 export function vehicleSource(vehicle){
   switch(vehicle.accuracy){
     case 'gps': return 'MTA GPS report';
+    case 'interpolated': return 'Estimated from live train reports';
     case 'prediction-stop': case 'arrival-only': return 'MTA arrival estimate';
     case 'reported-stop': return 'MTA station report';
     default: return 'MTA next-stop report';
@@ -58,12 +61,22 @@ export function vehicleReports(snapshot,board,now=Date.now()){
   }
   for(const row of board){
     if(row.mode!=='subway'||!row.trackingId||!row.stop?.coordinate||
-      !recent(row.predictionReportedAt,now,180000)||arrivalLabel(row,now)!=='Due')continue;
+      !recent(row.predictionReportedAt,now,row.estimateSource==='vehicle-reports'?90000:180000))continue;
     const vehicle=reports.get(row.trackingId);
     if(vehicle?.accuracy==='gps')continue;
     const stopId=row.stop.id.split(':').at(-1),name=row.stop.name;
     const nextStop={stopId,name,coordinate:row.stop.coordinate,arrivalTime:row.arrivalTime,
       departureTime:row.departureTime,reportedAt:row.predictionReportedAt};
+    if(row.estimateSource==='vehicle-reports'){
+      if(row.isNextStop&&vehicle?.nextStop?.stopId===stopId){
+        const track=vehicle.motion;
+        const arrivesAt=Date.parse(row.arrivalTime);
+        const motion=track&&arrivesAt>track.startedAt?{...track,arrivesAt}:track;
+        reports.set(row.trackingId,{...vehicle,motion,nextStop,directionLabel:row.direction||vehicle.directionLabel});
+      }
+      continue;
+    }
+    if(arrivalLabel(row,now)!=='Due')continue;
     if(vehicle?.accuracy==='reported-stop'&&vehicle.positionReport?.stopId===stopId){
       reports.set(row.trackingId,{...vehicle,nextStop,directionLabel:row.direction||vehicle.directionLabel});
       continue;
@@ -75,5 +88,8 @@ export function vehicleReports(snapshot,board,now=Date.now()){
       directionLabel:row.direction||vehicle?.directionLabel,bearing:sameStop?vehicle.bearing:null,
       source:'MTA subway arrival predictions',reportedAt:row.predictionReportedAt});
   }
-  return [...reports.values()];
+  return [...reports.values()].map(vehicle=>{
+    const sample=vehicle.motion&&sampleTrack(vehicle.motion,now);
+    return sample?{...vehicle,coordinate:sample.coordinate,bearing:sample.bearing}:vehicle;
+  });
 }

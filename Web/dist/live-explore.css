@@ -67,6 +67,11 @@ button.live-item:hover { background:#f4f8fb; }
   filter:drop-shadow(0 0 1px white);
 }
 .transit-target.panning::before { background:#e5eaff69; }
+.transit-target.settled::before { background:#dce8ffae; }
+@media (prefers-reduced-motion:no-preference) {
+  .transit-target.settled::before { animation:target-settle .26s ease-out; }
+  @keyframes target-settle { from { scale:1.2; } to { scale:1; } }
+}
 .transit-target[data-mode="bus"] { --target-color:#215a8e; }
 .subway-bullet {
   display:inline-grid; place-items:center; flex-shrink:0; position:relative; isolation:isolate;

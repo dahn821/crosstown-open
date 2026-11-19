@@ -28,3 +28,21 @@ test('Transitous coordinates and MTA stop IDs decode and unsupported service is 
   assert.equal(transitousItinerary({legs:[{...leg,cancelled:true}]}),null);
   assert.equal(transitousItinerary({legs:[{...leg,from:{...from,stopId:'external_R17N'}}]}),null);
 });
+
+test('Subway loading shares feed checks and skips Bus Time and Citi Bike',async()=>{
+  const requested=[];
+  const handle=createCommunityAPI({lookup,restaurants:{restaurants:[]},busKey:'test-only',fetcher:async url=>{
+    requested.push(String(url));
+    return new Response(null,{status:503});
+  }});
+  await handle(request('/api/health?feeds=0'));
+  assert.equal(requested.length,0);
+  const [vehicles,stops]=await Promise.all([
+    handle(request('/api/vehicles?modes=subway')),
+    handle(request('/api/transit?mode=subway&lat=40.75&lon=-73.98'))
+  ]);
+  assert.equal(vehicles.status,200);
+  assert.equal(stops.status,200);
+  assert.equal(requested.length,8);
+  assert(requested.every(url=>url.includes('api-endpoint.mta.info')));
+});

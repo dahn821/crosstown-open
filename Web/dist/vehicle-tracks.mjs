@@ -50,7 +50,7 @@ export function attachVehicleTracking({map,L,api,findTrip,onChange,onReport}){
   function render(trip){
     const vehicle=findTrip(selected.trackingId);
     const report=vehicle||(!trip?selected:null);
-    const note=report?[report.status,vehicleSource(report)]:['MTA live arrival predictions'];
+    const note=report?[report.status,vehicleSource(report)]:[trip?.estimateSource==='vehicle-reports'?'Estimated from live train reports':'MTA live arrival predictions'];
     const direction=trip?.direction||report?.directionLabel;
     if(direction&&direction!=='MTA reported heading')note.unshift(direction);
     source.textContent=note.join(' · ');
@@ -64,7 +64,11 @@ export function attachVehicleTracking({map,L,api,findTrip,onChange,onReport}){
     if(nextStops!==lastStops){
       lastStops=nextStops;
       const scroll=list.scrollTop;
-      list.innerHTML=trip.stops.map((stop,index)=>`<li><span class="tracker-stop-dot" aria-hidden="true"></span><span><strong>${esc(stop.name)}</strong><small>${index===0?'Next stop · ':''}${clock.format(new Date(stop.arrivalTime??stop.departureTime))}</small></span>${liveTimeMarkup(stop)}</li>`).join('');
+      list.innerHTML=trip.stops.map((stop,index)=>{
+        const time=Date.parse(stop.arrivalTime??stop.departureTime);
+        const note=[index===0?'Next stop':null,Number.isFinite(time)?clock.format(time):null].filter(Boolean).join(' · ');
+        return `<li><span class="tracker-stop-dot" aria-hidden="true"></span><span><strong>${esc(stop.name)}</strong><small>${note}</small></span>${Number.isFinite(time)?liveTimeMarkup(stop):'<small>Awaiting report</small>'}</li>`;
+      }).join('');
       list.scrollTop=scroll;
     }
     message.textContent=trip.segments.length?'Upcoming stops':'Upcoming stops · Route path unavailable';

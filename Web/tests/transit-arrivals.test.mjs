@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {arrivalLabel,trainIsDue,vehicleReports} from '../dist/transit-arrivals.mjs';
+import {sampleTrack} from '../dist/track-position.mjs';
 
 const now=Date.now();
 const at=offset=>new Date(now+offset*1000).toISOString();
@@ -41,4 +42,20 @@ test('confirmed station reports and genuine GPS keep their own source and coordi
   assert.equal(vehicle.accuracy,'reported-stop');
   assert(trainIsDue(vehicle,now));
   assert.deepEqual(vehicleReports([],[{...board,predictionReportedAt:at(-181)}],now),[]);
+});
+
+test('a moving train stays on the track, uses the matching station count, and stops at arrival',()=>{
+  const motion={startedAt:now-30000,arrivesAt:now+30000,expiresAt:now+90000,
+    points:[[40.75,-74,0],[40.75,-73.99,800],[40.76,-73.99,1800]]};
+  assert(sampleTrack(motion,now).coordinate.latitude>40.75);
+  const moving={...report,accuracy:'interpolated',motion,
+    nextStop:{stopId:'128S',...(calls),reportedAt:at(-15)}};
+  const row={...board,estimateSource:'vehicle-reports',isNextStop:true,arrivalTime:at(40)};
+  const [aligned]=vehicleReports([moving],[row],now);
+  assert.equal(aligned.accuracy,'interpolated');
+  assert.equal(aligned.motion.arrivesAt,now+40000);
+  assert.notDeepEqual(aligned.coordinate,row.stop.coordinate);
+  assert.deepEqual(sampleTrack(aligned.motion,now+42000).coordinate,{latitude:40.76,longitude:-73.99});
+  assert.equal(sampleTrack(aligned.motion,now+91000),null);
+  assert.deepEqual(vehicleReports([],[row],now),[]);
 });

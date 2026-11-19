@@ -177,7 +177,7 @@ struct TransitBoard: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
-                    if loading && board == nil { ProgressView("Checking MTA predictions…") }
+                    if loading && board == nil { ProgressView("Checking live transit…") }
                     if let error {
                         Text(error).font(.subheadline).foregroundStyle(Theme.secondary)
                         Button("Check Sources", action: onSources)
@@ -188,7 +188,7 @@ struct TransitBoard: View {
         }
         .task(id: queryID) {
             board = nil
-            do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+            do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
             while !Task.isCancelled {
                 await refresh()
                 do { try await Task.sleep(for: .seconds(30)) } catch { return }

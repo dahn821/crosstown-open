@@ -5,6 +5,7 @@ import {vehicleQuery,vehicleSnapshot,vehicleDirection} from '../vehicles.mjs';
 import {vehicleTrip,vehicleTripQuery} from '../vehicle-trip.mjs';
 import {trackingId} from '../trip-reports.mjs';
 import {busTripSegments} from '../bus-trip-shapes.mjs';
+import {nearbySubwayBoard} from '../subway-stations.mjs';
 const now=Date.now(),seconds=Math.floor(now/1000);
 test('direction arrows follow reported GPS or actual stop order, including reverse trips and terminals',()=>{
  const stops={a:{name:'A',latitude:40.7,longitude:-74},b:{name:'B',latitude:40.71,longitude:-74},c:{name:'C',latitude:40.71,longitude:-73.99}};
@@ -98,7 +99,7 @@ test('vehicle provider failures never expose the private credential in source st
  assert.equal(s.status().busVehicles.error,'Bus GPS positions could not be refreshed.');
  assert(!JSON.stringify(s.status()).includes(key));
 });
-test('trip details and the board share arrival time, keeping a due train selectable through its station dwell',async()=>{
+test('live stop observations drive the same moving train and countdown across endpoints',async()=>{
  const stops={oldN:{name:'Old station',latitude:40.74,longitude:-73.982},
   '632N':{name:'33 St',latitude:40.746,longitude:-73.982},
   skipN:{name:'Skipped station',latitude:40.75,longitude:-73.981},
@@ -111,28 +112,31 @@ test('trip details and the board share arrival time, keeping a due train selecta
   {stopId:'skipN',arrival:{time:seconds+120},scheduleRelationship:1},
   {stopId:'nextN',arrival:{time:seconds+180}}
  ]}};
- const position={vehicle:{trip,timestamp:seconds-10,stopId:'oldN',currentStatus:2}};
+ const position={vehicle:{trip,timestamp:seconds-30,stopId:'632N',currentStatus:1}};
  s.entries.set('gtfs',{sourceTimestamp:now,message:{entity:[position,entity]}});
- const board=s.departures([{gtfsId:'nyct:632N',name:'33 St',lat:40.746,lon:-73.982,distance:0}],now);
+ const board=nearbySubwayBoard(s,stops['632N'],{stop:'632N'},now).departures;
  const [marker]=vehicleSnapshot(s,{now}).vehicles;
  assert.equal(marker.trackingId,board[0].trackingId);
- assert.equal(marker.accuracy,'prediction-stop');
+ assert.equal(marker.accuracy,'interpolated');
  assert.equal(marker.nextStop.stopId,'632N');
- assert.equal(marker.positionReport.stopId,'oldN');
+ assert.equal(marker.motion.fromStopId,'oldN');
+ assert(marker.coordinate.latitude>40.74&&marker.coordinate.latitude<40.746);
  assert.equal(marker.nextStop.arrivalTime,board[0].arrivalTime);
- assert.equal(marker.nextStop.departureTime,board[0].departureTime);
+ assert.notEqual(marker.nextStop.arrivalTime,new Date((seconds-2)*1000).toISOString());
+ assert.equal(board[0].estimateSource,'vehicle-reports');
+ assert(vehicleSnapshot(s,{now:now+5000}).vehicles[0].coordinate.latitude>marker.coordinate.latitude);
  const query=vehicleTripQuery(new URLSearchParams({id:marker.trackingId}));
  const details=await vehicleTrip(s,query,now);
  assert.equal(details.status,'live');
  assert.deepEqual(details.stops.map(stop=>stop.name),['33 St','Next station']);
  assert.equal(details.stops[0].arrivalTime,board[0].arrivalTime);
- assert.equal(details.position.accuracy,'prediction-stop');
- assert.deepEqual(details.segments,[[[40.746,-73.982],[40.751,-73.981],[40.76,-73.982]]]);
- s.entries.get('gtfs').message.entity=[entity];
- const [estimated]=vehicleSnapshot(s,{now}).vehicles;
- assert.equal(estimated.trackingId,marker.trackingId);
- assert.deepEqual(estimated.coordinate,marker.coordinate);
- assert.equal(vehicleSnapshot(s,{now:now+66000}).vehicles.length,0);
+ assert.equal(details.position.accuracy,'interpolated');
+ assert.deepEqual(details.segments[1],[[40.746,-73.982],[40.751,-73.981],[40.76,-73.982]]);
+ assert.deepEqual(details.segments[0][0],[marker.coordinate.latitude,marker.coordinate.longitude]);
+ assert.equal(vehicleSnapshot(s,{now:now+91000}).vehicles.length,0);
+ s.entries.set('gtfs',{sourceTimestamp:now,message:{entity:[entity]}});
+ assert.equal(vehicleSnapshot(s,{now}).vehicles.length,0);
+ assert.equal(nearbySubwayBoard(s,stops['632N'],{stop:'632N'},now).departures.length,0);
  entity.tripUpdate.trip.scheduleRelationship=3;
  assert.equal((await vehicleTrip(s,query,now)).status,'changed');
 });

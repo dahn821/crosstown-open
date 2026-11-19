@@ -1,6 +1,7 @@
 import {icon} from './icons.mjs';
 import {subwayBullet,subwayStyle} from './subway-ui.mjs';
 import {trainIsDue,vehicleReports,vehicleSource} from './transit-arrivals.mjs';
+import {sampleTrack} from './track-position.mjs';
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const color=v=>/^[0-9a-f]{6}$/i.test(v.routeColor)?'#'+v.routeColor:v.mode==='bus'?'#2d5bff':'#25815f';
 export function attachVehicleMap({map,L,api,getRoute,onSelect,onSnapshot=()=>{}}){
@@ -9,11 +10,13 @@ export function attachVehicleMap({map,L,api,getRoute,onSelect,onSnapshot=()=>{}}
   control.innerHTML=`<button class="vehicle-layer-title" aria-expanded="false">${icon('activity')} Live vehicles <span>⌄</span></button><div class="vehicle-layer-options" hidden><label><input type="checkbox" name="bus" checked>Bus GPS</label><label><input type="checkbox" name="subway" checked>Train station reports and estimates</label><label><input type="checkbox" name="routeOnly">Selected route lines</label><p>Tap a vehicle to follow its upcoming stops.</p></div><p class="vehicle-map-status" role="status">Checking vehicle reports…</p><button class="vehicle-expand">Expand live map</button>`;
   document.querySelector('#app').append(control);
   const status=control.querySelector('.vehicle-map-status'),options=control.querySelector('.vehicle-layer-options'),title=control.querySelector('.vehicle-layer-title');
-  let controller,requestID=0,moveTimer,snapshot,suspended=false,view='directions',line='';
+  let controller,requestID=0,moveTimer,snapshot,suspended=false,view='directions',line='',lastQuery='',requestedAt=0;
   let predictions=[],reports=[],selectedTrip=null,trackingReport=null;
+  let motionFrame=0,lastFrame=0;
+  const reducedMotion=matchMedia('(prefers-reduced-motion: reduce)');
   const modeEnabled=mode=>view==='directions'?control.querySelector(`[name="${mode}"]`).checked:mode===view;
   function clear(){
-    controller?.abort();requestID++;snapshot=null;layer.clearLayers();markers.clear();
+    controller?.abort();controller=null;requestID++;snapshot=null;lastQuery='';layer.clearLayers();markers.clear();
   }
   function markerIcon(vehicle){
     const gps=vehicle.accuracy==='gps',compact=map.getZoom()<15,heading=vehicle.bearing==null?'':`<span class="vehicle-heading" aria-hidden="true" style="transform:rotate(${Number(vehicle.bearing)}deg)"><svg viewBox="0 0 16 16"><path d="M8 1 14 14 8 11 2 14Z"/></svg></span>`;
@@ -23,7 +26,7 @@ export function attachVehicleMap({map,L,api,getRoute,onSelect,onSnapshot=()=>{}}
     const stack=count>1?`<small class="bus-pin-count" aria-hidden="true">${count}</small>`:'';
     const due=dueCount===0||view!=='subway'?'':`<span class="train-due">Due${dueCount>1?' ×'+dueCount:''}</span>`;
     const selected=selectedTrip&&(vehicle.trackingId===selectedTrip||vehicle.group?.some(v=>v.trackingId===selectedTrip));
-    const flags=`${selected?'vehicle-selected':''} ${vehicle.accuracy==='prediction-stop'?'vehicle-prediction':''}`;
+    const flags=`${selected?'vehicle-selected':''} ${['prediction-stop','interpolated'].includes(vehicle.accuracy)?'vehicle-prediction':''}`;
     if(view==='subway'){
       const style=subwayStyle(vehicle.line,vehicle.routeColor);
       const html=`<div class="subway-train ${flags}" style="--vehicle-color:${style.color}">${subwayBullet(vehicle.line,vehicle.routeColor)}${heading}${due||stack}</div>`;
@@ -52,13 +55,14 @@ export function attachVehicleMap({map,L,api,getRoute,onSelect,onSnapshot=()=>{}}
     }
     L.popup({maxWidth:290}).setLatLng([vehicle.coordinate.latitude,vehicle.coordinate.longitude]).setContent(list).openOn(map);
   }
-  function displayedVehicles(vehicles){
+  function displayedVehicles(vehicles,now){
     const cells=new Map();
     for(const vehicle of vehicles){
       const {latitude,longitude}=vehicle.coordinate;
       let cell=vehicle.id;
-      if(vehicle.mode==='subway')cell=`station/${latitude.toFixed(5)}/${longitude.toFixed(5)}`;
-      else if(map.getZoom()<15){
+      if(vehicle.mode==='subway'){
+        if(!vehicle.motion||now>=vehicle.motion.arrivesAt)cell=`station/${latitude.toFixed(5)}/${longitude.toFixed(5)}`;
+      }else if(map.getZoom()<15){
         const p=map.latLngToContainerPoint([latitude,longitude]);
         cell=`bus/${Math.floor(p.x/35)}/${Math.floor(p.y/35)}`;
       }
@@ -71,16 +75,34 @@ export function attachVehicleMap({map,L,api,getRoute,onSelect,onSnapshot=()=>{}}
       return {...first,id:cell,group:items};
     });
   }
+  function animate(frame){
+    motionFrame=0;
+    if(suspended||document.hidden||reducedMotion.matches)return;
+    if(frame-lastFrame<100){motionFrame=requestAnimationFrame(animate);return;}
+    lastFrame=frame;
+    const now=Date.now();let moving=false;
+    for(const marker of markers.values()){
+      const motion=marker.vehicle?.motion;
+      if(!motion||marker.vehicle.group)continue;
+      const sample=sampleTrack(motion,now);
+      if(!sample)continue;
+      marker.setLatLng([sample.coordinate.latitude,sample.coordinate.longitude]);
+      const arrow=marker.getElement()?.querySelector('.vehicle-heading');
+      if(arrow)arrow.style.transform=`rotate(${sample.bearing}deg)`;
+      moving||=now<motion.arrivesAt;
+    }
+    if(moving)motionFrame=requestAnimationFrame(animate);
+  }
   function render(){
     if(suspended||document.hidden)return;
     const now=Date.now();
     const current=snapshot?.vehicles||[];
     const currentReport=trackingReport&&current.find(v=>v.trackingId===trackingReport.trackingId);
-    const positions=trackingReport&&(!currentReport||Date.parse(currentReport.reportedAt)<Date.parse(trackingReport.reportedAt))?
+    const positions=trackingReport&&(!currentReport||trackingReport.mode==='subway'||Date.parse(currentReport.reportedAt)<Date.parse(trackingReport.reportedAt))?
       [...current.filter(v=>v.trackingId!==trackingReport.trackingId),trackingReport]:current;
     reports=vehicleReports(positions,predictions,now).filter(v=>modeEnabled(v.mode))
-      .map(v=>({...v,due:v.mode==='subway'&&trainIsDue(v,now)&&(v.accuracy==='prediction-stop'||v.positionReport?.stopId===v.nextStop?.stopId)}));
-    const visible=displayedVehicles(reports),ids=new Set(visible.map(v=>v.id));
+      .map(v=>({...v,due:v.mode==='subway'&&trainIsDue(v,now)&&(v.motion||v.accuracy==='prediction-stop'||v.positionReport?.stopId===v.nextStop?.stopId)}));
+    const visible=displayedVehicles(reports,now),ids=new Set(visible.map(v=>v.id));
     for(const [id,marker] of markers)if(!ids.has(id)){layer.removeLayer(marker);markers.delete(id);}
     for(const v of visible){
       const point=[v.coordinate.latitude,v.coordinate.longitude];
@@ -100,7 +122,9 @@ export function attachVehicleMap({map,L,api,getRoute,onSelect,onSnapshot=()=>{}}
       marker.vehicle=v;
       const node=marker.getElement();
       if(node&&node.getAttribute('aria-label')!==title){node.title=title;node.setAttribute('aria-label',title);}
+      if(node){if(v.motion)node.dataset.trackId=v.trackingId;else delete node.dataset.trackId;}
     }
+    if(!motionFrame&&!reducedMotion.matches&&visible.some(v=>!v.group&&v.motion?.arrivesAt>now))motionFrame=requestAnimationFrame(animate);
     if(!snapshot)return;
     const buses=reports.filter(v=>v.mode==='bus').length,trains=reports.length-buses;
     let text=`${buses} bus GPS · ${trains} train reports and estimates`;
@@ -114,17 +138,21 @@ export function attachVehicleMap({map,L,api,getRoute,onSelect,onSnapshot=()=>{}}
     if(document.hidden||suspended||view==='bike')return;
     const modes=['bus','subway'].filter(modeEnabled);
     if(!modes.length){clear();status.textContent='Vehicle layers hidden';return;}
-    const id=++requestID;controller?.abort();controller=new AbortController();
-    const b=map.getBounds(),params=new URLSearchParams({bbox:[b.getWest(),b.getSouth(),b.getEast(),b.getNorth()].join(','),modes:modes.join(',')});
+    const b=map.getBounds(),params=new URLSearchParams({bbox:[b.getWest(),b.getSouth(),b.getEast(),b.getNorth()].map(bound=>bound.toFixed(5)).join(','),modes:modes.join(',')});
     const route=getRoute(),lines=[...new Set(route?.legs.map(l=>l.line).filter(Boolean)||[])];
     const routeOnly=control.querySelector('[name="routeOnly"]');routeOnly.disabled=!lines.length;
     if(view==='subway')params.set('network','1');
     if(view!=='directions'&&line)params.set('lines',line);
     else if(view==='directions'&&routeOnly.checked&&lines.length)params.set('lines',lines.join(','));
+    const query=params.toString(),now=Date.now();
+    if(query===lastQuery&&(controller||now-requestedAt<1500))return;
+    lastQuery=query;requestedAt=now;
+    const id=++requestID;controller?.abort();controller=new AbortController();
     try{
       const result=await api('/vehicles?'+params,{signal:controller.signal});if(id!==requestID)return;
       snapshot=result;render();onSnapshot(view,result);
     }catch(e){if(id!==requestID||e.name==='AbortError')return;clear();onSnapshot(view,null);status.textContent='Vehicle reports unavailable. Refresh the map to try again.';}
+    finally{if(id===requestID)controller=null;}
   }
   title.addEventListener('click',()=>{options.hidden=!options.hidden;title.setAttribute('aria-expanded',!options.hidden);});
   control.addEventListener('change',refresh);

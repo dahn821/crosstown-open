@@ -2,7 +2,9 @@ import {busLineName,busStopID,busStopName,subwayFeeds} from './feeds.mjs';
 import {busTripSegments,loadBusRoute} from './bus-trip-shapes.mjs';
 import {stationStopID,subwayDirection} from './subway-stations.mjs';
 import {canceledTrip,findTripUpdate,freshPrediction,indexTripUpdates,positionReportTime,trackingQuery,tripReportTime,upcomingPredictions} from './trip-reports.mjs';
-import {arrivalAnchor,predictedPosition,reportedPosition,vehicleDirection} from './vehicles.mjs';
+import {reportedPosition,vehicleDirection} from './vehicles.mjs';
+import {liveTrain,trainPosition,trainStopTimes} from './subway-live.mjs';
+import {remainingTrack} from '../Web/dist/track-position.mjs';
 
 const iso=time=>new Date(time).toISOString();
 export const vehicleTripQuery=params=>trackingQuery(params,['bus',...subwayFeeds]);
@@ -20,22 +22,48 @@ function currentReport(entry,trip,now){
   return best;
 }
 
-function subwaySegments(store,trip,update,upcoming,lastStopId){
-  const ids=[...(lastStopId?[lastStopId]:[]),...upcoming.map(item=>item.stopId)];
+function subwaySegments(store,trip,update,ids){
   return ids.flatMap((from,index)=>{
     const to=ids[index+1];
     const path=to&&store.subwayGeometry(trip.routeId,trip.tripId,from,to,{
-      previous:ids[index-1],next:ids[index+2],shapeId:update.tripProperties?.shapeId
+      previous:ids[index-1],next:ids[index+2],shapeId:update?.tripProperties?.shapeId
     });
     return path?[path]:[];
   });
 }
 
+function subwayTrip(store,query,entity,entry,now){
+  if(canceledTrip(entity))return {status:'changed'};
+  const train=liveTrain(store,query.feed,query.id,now);
+  if(!train)return {status:'unavailable'};
+  const {line,trip,update,vehicle,observedAt}=train;
+  const raw=reportedPosition(store,'subway',vehicle,observedAt);
+  const {position:marker,nextStop,motion,bearing}=trainPosition(store,train,raw,now);
+  const times=trainStopTimes(store,train);
+  const stops=train.stops.flatMap((id,sequence)=>{
+    const stop=store.tripIndex.stops?.[id];
+    if(!stop)return [];
+    const time=times[sequence];
+    return [{id,sequence,name:stop.name,coordinate:{latitude:stop.latitude,longitude:stop.longitude},
+      arrivalTime:time?.arrivalTime??null,departureTime:time?.departureTime??null}];
+  });
+  const current=remainingTrack(motion,now);
+  const segments=[...(current?[current]:[]),...subwaySegments(store,trip,update,train.stops)];
+  const direction=subwayDirection(train.target,store.subwayCatalog.metadata.get(stationStopID(train.target)));
+  const routeColor=store.tripIndex.routes?.[line]?.route_color||null,reportedAt=iso(observedAt);
+  const heading=vehicleDirection(vehicle,update,store.tripIndex.stops);
+  const position={id:query.id,trackingId:query.id,mode:'subway',line,routeColor,...marker,nextStop,motion,positionReport:raw,
+    bearing:bearing??heading.bearing,bearingSource:bearing==null?heading.bearingSource:'estimated-track',directionLabel:direction,
+    reportedAtSeconds:observedAt/1000,sourceTimestamp:iso(entry.sourceTimestamp),source:'MTA subway vehicle reports'};
+  return {status:'live',id:query.id,mode:'subway',line,routeColor,stops,segments,direction,position,reportedAt,
+    estimateSource:'vehicle-reports'};
+}
+
 export async function vehicleTrip(store,query,now=Date.now()){
-  const mode=query.feed==='bus'?'bus':'subway';
   const entry=store.entries.get(query.feed);
   if(!entry||store.freshness(query.feed).stale)return {status:'unavailable'};
   const entity=findTripUpdate(indexTripUpdates(entry),query);
+  if(query.feed!=='bus')return subwayTrip(store,query,entity,entry,now);
   if(!entity)return {status:'unavailable'};
   const update=entity.tripUpdate,trip=update.trip;
   const measured=tripReportTime(update,entry);
@@ -43,39 +71,25 @@ export async function vehicleTrip(store,query,now=Date.now()){
   if(canceledTrip(entity))return {status:'changed',reportedAt:iso(measured)};
   const upcoming=upcomingPredictions(update,now,4*3600000);
   if(!upcoming.length)return {status:'unavailable'};
-  const positionFeed=mode==='bus'?'busVehicles':query.feed;
+  const positionFeed='busVehicles';
   const positionEntry=store.freshness(positionFeed).stale?null:store.entries.get(positionFeed);
   const livePosition=currentReport(positionEntry,trip,now),vehicle=livePosition?.vehicle;
-  const positionReport=livePosition?reportedPosition(store,mode,vehicle,livePosition.time):null;
-  const nextStop=mode==='subway'?arrivalAnchor(store,entity,entry,now):null;
-  const estimate=predictedPosition(positionReport,nextStop),marker=estimate||positionReport;
-  const gps=positionReport?.accuracy==='gps'?positionReport.coordinate:null;
-  const busRoute=mode==='bus'?await loadBusRoute(store,trip.routeId,vehicle):null;
-  const first=upcoming[0];
-  const currentIndex=update.stopTimeUpdate.findIndex(call=>call.stopId===vehicle?.stopId);
-  const lastStopId=marker?.accuracy==='reported-stop'&&currentIndex>=0&&currentIndex<first.index?vehicle.stopId:null;
-  const segments=mode==='bus'?busTripSegments(busRoute,trip.directionId??vehicle?.trip?.directionId,upcoming,gps):
-    subwaySegments(store,trip,update,upcoming,lastStopId);
+  const marker=livePosition?reportedPosition(store,'bus',vehicle,livePosition.time):null;
+  const gps=marker?.coordinate;
+  const busRoute=await loadBusRoute(store,trip.routeId,vehicle);
+  const segments=busTripSegments(busRoute,trip.directionId??vehicle?.trip?.directionId,upcoming,gps);
   const stops=upcoming.map(item=>{
-    let name,coordinate=null;
-    if(mode==='bus'){
-      const id=busStopID(item.stopId),stop=busRoute?.stops.get(id)||store.busStops.get(id);
-      if(stop){name=busStopName(stop.name);coordinate={latitude:stop.lat,longitude:stop.lon};}
-    }else{
-      const stop=store.tripIndex.stops?.[item.stopId];
-      if(stop){name=stop.name;coordinate={latitude:stop.latitude,longitude:stop.longitude};}
-    }
-    return {id:item.stopId,sequence:item.index,name:name||`Stop ${item.stopId}`,coordinate,
+    const id=busStopID(item.stopId),stop=busRoute?.stops.get(id)||store.busStops.get(id);
+    return {id:item.stopId,sequence:item.index,name:stop?busStopName(stop.name):`Stop ${item.stopId}`,
+      coordinate:stop?{latitude:stop.lat,longitude:stop.lon}:null,
       arrivalTime:iso(item.arrival),departureTime:iso(item.departure)};
   });
-  const direction=mode==='subway'?subwayDirection(first.stopId,store.subwayCatalog.metadata.get(stationStopID(first.stopId))):
-    stops.length>1&&!stops.at(-1).name.startsWith('Stop ')?'Toward '+stops.at(-1).name:null;
-  const line=mode==='bus'?busLineName(trip.routeId):trip.routeId;
-  const routeColor=mode==='subway'?store.tripIndex.routes?.[line]?.route_color||null:null;
-  const position=marker?{id:query.id,trackingId:query.id,mode,line,routeColor,...marker,nextStop,positionReport,
-    ...vehicleDirection(estimate?{stopId:nextStop.stopId}:vehicle,mode==='subway'?update:null,store.tripIndex.stops),
+  const direction=stops.length>1&&!stops.at(-1).name.startsWith('Stop ')?'Toward '+stops.at(-1).name:null;
+  const line=busLineName(trip.routeId);
+  const position=marker?{id:query.id,trackingId:query.id,mode:'bus',line,routeColor:null,...marker,positionReport:marker,
+    ...vehicleDirection(vehicle,null,store.tripIndex.stops),
     directionLabel:direction,
     reportedAtSeconds:Date.parse(marker.reportedAt)/1000,sourceTimestamp:iso((positionEntry||entry).sourceTimestamp),
-    source:mode==='bus'?'MTA Bus Time vehicle positions':estimate?'MTA subway arrival predictions':'MTA subway vehicle reports'}:null;
-  return {status:'live',id:query.id,mode,line,routeColor,stops,segments,direction,reportedAt:iso(measured),position};
+    source:'MTA Bus Time vehicle positions'}:null;
+  return {status:'live',id:query.id,mode:'bus',line,routeColor:null,stops,segments,direction,reportedAt:iso(measured),position};
 }
