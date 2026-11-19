@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {FeedStore,canonicalTripId,busID} from '../feeds.mjs';
+import {nearbySubwayBoard} from '../subway-stations.mjs';
 
 test('real GTFS SBS plus suffixes and Bus Company prefixes preserve route identity',()=>{
  for(const [provider,display]of [['MTA NYCT_M15+','M15-SBS'],['MTA NYCT_M34A+','M34A-SBS'],['MTABC_Q52+','Q52-SBS'],['MTA_403058','403058']])assert.equal(busID(provider),busID(display));
@@ -52,7 +53,7 @@ test('arrive-by connections select the latest reachable train before the deadlin
 test('departure boards use actual stop predictions, reject stale/skipped/deleted reports, and preserve directions',()=>{
  const {store,now}=liveStore();
  const stops=[{gtfsId:'nyct:632N',name:'33 St',lat:40.75,lon:-73.98,vehicleMode:'SUBWAY',distance:200,routes:[{shortName:'6',color:'00933C'}]}];
- const rows=store.departures(stops,now);assert.equal(rows.length,1);assert.equal(rows[0].direction,'Northbound');
+ const rows=store.departures(stops,now);assert.equal(rows.length,1);assert.equal(rows[0].direction,'Uptown');
  assert.equal(rows[0].line,'6');assert.equal(rows[0].predictionReportedAt,new Date(now).toISOString());
  store.entries.get('gtfs').message.entity[0].tripUpdate.stopTimeUpdate[0].scheduleRelationship=1;
  assert.equal(store.departures(stops,now).length,0);
@@ -67,4 +68,27 @@ test('bus departure boards match provider prefixes and SBS without using a subwa
  const stop={gtfsId:'manhattan:403058',name:'Bus stop',lat:40.75,lon:-73.98,vehicleMode:'BUS',distance:80,routes:[{shortName:'M15-SBS'}]};
  assert.equal(store.departures([stop],now)[0].line,'M15-SBS');
  assert.equal(store.departures([{...stop,vehicleMode:'SUBWAY'}],now).length,0);
+});
+
+test('subway exploration ranks the nearest station complexes before considering departure times',()=>{
+ const now=Date.now(),center={latitude:40.75,longitude:-73.98};
+ const stations=[['C1','Grand Central',0.001,'610','6'],['C2','Grand Central',0.0012,'610','7'],
+  ['A1','Second',0.002,'2','1'],['A2','Third',0.003,'3','1'],['A3','Fourth',0.004,'4','1'],['A4','Fifth',0.005,'5','7']];
+ const structures=stations.map(([id,name,delta,complex,line])=>({gtfs_stop_id:id,stop_name:name,complex_id:complex,daytime_routes:line,
+   north_direction_label:line==='7'?'Queens':'Uptown',south_direction_label:line==='7'?'Hudson Yards':'Downtown'}));
+ const stops=Object.fromEntries(stations.flatMap(([id,name,delta])=>['N','S'].map(direction=>
+   [id+direction,{name,latitude:center.latitude+delta,longitude:center.longitude,parent:id}])));
+ const store=new FeedStore({tripIndex:{stops,routes:{6:{route_color:'009952'},7:{route_color:'B933AD'}}},stationStructures:structures});
+ const entity=[['6','C1N',120],['6','C1S',180],['7','C2S',150],['7','A4N',60]].map(([line,stopId,inSeconds],i)=>({
+   tripUpdate:{trip:{routeId:line,tripId:'trip'+i},stopTimeUpdate:[{stopId,departure:{time:Math.floor(now/1000)+inSeconds}}]}
+ }));
+ store.entries.set('gtfs',{sourceTimestamp:now,message:{entity}});
+ const board=nearbySubwayBoard(store,center,{},now);
+ assert.deepEqual(board.stations.map(station=>station.name),['Grand Central','Second','Third','Fourth']);
+ assert.deepEqual(board.departures.map(departure=>departure.direction),['Uptown','Hudson Yards','Downtown']);
+ assert(board.departures.every(departure=>departure.stationId==='subway-complex:610'));
+ assert.equal(board.departures[0].routeColor,'009952');
+ assert.deepEqual(nearbySubwayBoard(store,center,{line:'7'},now).stations.map(station=>station.name),['Grand Central','Fifth']);
+ assert.equal(nearbySubwayBoard(store,center,{stop:'nyct:C2'},now).departures.length,3);
+ assert.equal(nearbySubwayBoard(store,{latitude:40.7549,longitude:-73.98},{},now).stations[0].name,'Fifth');
 });

@@ -1,8 +1,11 @@
 import bindings from 'gtfs-realtime-bindings';
 import fs from 'node:fs';
+import {subwayStations,stationStopID,subwayDirection} from './subway-stations.mjs';
 const rt=bindings.transit_realtime;
 let defaultTripIndex={};
 try{defaultTripIndex=JSON.parse(fs.readFileSync(new URL('./data/trip-index.json',import.meta.url),'utf8'));}catch{}
+let defaultStationStructures=[];
+try{defaultStationStructures=JSON.parse(fs.readFileSync(new URL('./data/station-structures.json',import.meta.url),'utf8'));}catch{}
 
 export function canonicalTripId(index,id,date){
   const weekday=(new Date(`${date.slice(0,4)}-${date.slice(4,6)}-${date.slice(6,8)}T12:00:00Z`).getUTCDay()+6)%7;
@@ -21,8 +24,9 @@ const epoch=x=>typeof x==='number'?x*1000:typeof x==='string'?Date.parse(x):0;
 export const busID=id=>String(id??'').replace(/^(?:MTA(?:[ _](?:NYCT|MTABC|BUS))?|MTABC|NYCT)[_ :]+/i,'').replace(/\+$/,'-SBS').replace(/[^a-z0-9]/gi,'').toUpperCase();
 const bareStopId=id=>String(id).split(':').at(-1);
 export class FeedStore {
-  constructor({fetcher=fetch,busKey=process.env.MTA_BUS_TIME_KEY||'',tripIndex=defaultTripIndex}={}){
+  constructor({fetcher=fetch,busKey=process.env.MTA_BUS_TIME_KEY||'',tripIndex=defaultTripIndex,stationStructures=defaultStationStructures}={}){
     this.fetcher=fetcher;this.busKey=busKey;this.tripIndex=tripIndex;this.entries=new Map();this.gbfs=new Map();this.pending=new Map();this.lastBikeError=null;
+    this.subwayCatalog=subwayStations(tripIndex.stops,stationStructures);
   }
   async get(url,binary=false){const response=await this.fetcher(url,{signal:AbortSignal.timeout(20000),headers:{'User-Agent':'Crosstown/0.2 personal NYC trip planner'}});if(!response.ok)throw Error('Provider returned '+response.status);return binary?Buffer.from(await response.arrayBuffer()):response.json();}
   async refreshSubway(name){
@@ -111,7 +115,7 @@ export class FeedStore {
     }
     return candidates.sort((a,b)=>Number.isFinite(latestArrival)?b.departure-a.departure||a.arrival-b.arrival:a.arrival-b.arrival);
   }
-  departures(stops,now=Date.now(),{mode:focusMode,stop:focusStop}={}){
+  departures(stops,now=Date.now(),{mode:focusMode,stop:focusStop,line:focusLine,limit=40}={}){
     const key=(mode,id)=>mode+':'+(mode==='bus'?busID(bareStopId(id)):bareStopId(id));
     const nearby=new Map(),stopByKey=new Map(),found=new Map();
     for(const stop of stops){
@@ -133,13 +137,15 @@ export class FeedStore {
           if(!stop||time<now||time>now+90*60000)continue;
           const route=stop.routes?.find(r=>mode==='bus'?busID(r.shortName)===busID(trip.routeId):r.shortName===trip.routeId);
           const line=route?.shortName||String(trip.routeId||'').replace(/^(?:MTA NYCT|MTABC)_/,'').replace(/\+$/,'-SBS');
+          if(focusLine&&line!==focusLine)continue;
           const id=[name,trip.tripId,stop.gtfsId,time].join('|');
           const next=mode==='bus'?stopByKey.get(key(mode,calls[index+1]?.stopId)):null;
-          const direction=mode==='subway'?String(call.stopId).endsWith('N')?'Northbound':String(call.stopId).endsWith('S')?'Southbound':'':next?'Toward '+next.name:null;
-          found.set(id,{id,mode,line,stop:{id:stop.gtfsId,name:stop.name,neighborhood:'New York City',coordinate:{latitude:stop.lat,longitude:stop.lon},selectable:true},metersAway:stop.distance,departureTime:new Date(time).toISOString(),direction,routeColor:route?.color||null,predictionReportedAt:new Date(entry.sourceTimestamp).toISOString()});
+          const direction=mode==='subway'?subwayDirection(call.stopId,this.subwayCatalog.metadata.get(stationStopID(call.stopId))):next?'Toward '+next.name:null;
+          const routeColor=route?.color||(mode==='subway'?this.tripIndex.routes?.[line]?.route_color:null);
+          found.set(id,{id,mode,line,stationId:stop.stationId,stop:{id:stop.gtfsId,name:stop.name,neighborhood:'New York City',coordinate:{latitude:stop.lat,longitude:stop.lon},selectable:true},metersAway:stop.distance,departureTime:new Date(time).toISOString(),direction,routeColor:routeColor||null,predictionReportedAt:new Date(entry.sourceTimestamp).toISOString()});
         }
       }
     }
-    const counts=new Map(),modeCounts=new Map();return [...found.values()].sort((a,b)=>Date.parse(a.departureTime)-Date.parse(b.departureTime)||a.metersAway-b.metersAway).filter(d=>{const k=d.mode+'|'+d.stop.id+'|'+d.line,n=counts.get(k)||0,m=modeCounts.get(d.mode)||0;if(n>=3||m>=40)return false;counts.set(k,n+1);modeCounts.set(d.mode,m+1);return true;});
+    const counts=new Map(),modeCounts=new Map();return [...found.values()].sort((a,b)=>Date.parse(a.departureTime)-Date.parse(b.departureTime)||a.metersAway-b.metersAway).filter(d=>{const k=d.mode+'|'+d.stop.id+'|'+d.line,n=counts.get(k)||0,m=modeCounts.get(d.mode)||0;if(n>=3||m>=limit)return false;counts.set(k,n+1);modeCounts.set(d.mode,m+1);return true;});
   }
 }

@@ -27,7 +27,7 @@ export function vehicleQuery(params){
   if(lines.length>40||lines.some(l=>l.length>30||!/^[a-z0-9+ -]+$/i.test(l)))throw error('Choose valid transit lines.');
   return {bounds,modes,lines,network:params.get('network')==='1'&&modes.includes('subway')};
 }
-function subwayNetwork(updates,index,lines,bounds,now,segments,stations){
+function subwayNetwork(updates,index,catalog,lines,bounds,now,segments,stations){
   const overlaps=(a,b)=>Math.max(a.longitude,b.longitude)>=bounds[0]&&Math.min(a.longitude,b.longitude)<=bounds[2]&&Math.max(a.latitude,b.latitude)>=bounds[1]&&Math.min(a.latitude,b.latitude)<=bounds[3];
   for(const update of updates.values()){
     const line=update.trip.routeId;
@@ -37,7 +37,7 @@ function subwayNetwork(updates,index,lines,bounds,now,segments,stations){
       const at=number((call.arrival||call.departure)?.time)*1000;
       if(!Number.isFinite(at)||at<now-90000||at>now+90*60000)continue;
       const from=index.stops[call.stopId],fromID=call.stopId.replace(/[NS]$/,'');
-      if(overlaps(from,from)&&!stations.has(fromID))stations.set(fromID,{id:'nyct:'+fromID,name:from.name,coordinate:from});
+      if(overlaps(from,from)&&!stations.has(fromID))stations.set(fromID,{id:'nyct:'+fromID,complexId:catalog.resolve(fromID),name:from.name,coordinate:from});
       const next=calls[i+1],to=next&&index.stops[next.stopId];
       if(!to||!overlaps(from,to))continue;
       const pair=[fromID,next.stopId.replace(/[NS]$/,'')].sort(),key=line+'|'+pair.join('|');
@@ -54,7 +54,7 @@ export function vehicleSnapshot(store,{bounds=nyc,modes=['bus','subway'],lines=[
       const t=e.tripUpdate?.trip;return t?.tripId&&[3,7].includes(t.scheduleRelationship)?[t.tripId+'|'+(t.startDate||'')]:[];
     }));
     const updates=new Map((entry.message?.entity||[]).filter(e=>!e.isDeleted&&e.tripUpdate?.trip).map(e=>[e.tripUpdate.trip.tripId+'|'+(e.tripUpdate.trip.startDate||''),e.tripUpdate]));
-    if(network&&mode==='subway')subwayNetwork(updates,store.tripIndex,lines,bounds,now,segments,stations);
+    if(network&&mode==='subway')subwayNetwork(updates,store.tripIndex,store.subwayCatalog,lines,bounds,now,segments,stations);
     for(const entity of entry.message?.entity||[]){
       const v=entity.vehicle,trip=v?.trip;
       if(entity.isDeleted||!v||!trip?.routeId||[3,7].includes(trip.scheduleRelationship))continue;

@@ -240,6 +240,7 @@ public struct TransitDeparture: Codable, Identifiable, Sendable {
     public var id: String
     public var mode: TravelMode
     public var line: String
+    public var stationId: String? = nil
     public var stop: Place
     public var metersAway: Double
     public var departureTime: String
@@ -247,11 +248,18 @@ public struct TransitDeparture: Codable, Identifiable, Sendable {
     public var routeColor: String?
     public var predictionReportedAt: String
 }
+public struct TransitStation: Codable, Identifiable, Sendable {
+    public var id: String
+    public var name: String
+    public var coordinate: Coordinate
+    public var metersAway: Double
+}
 public struct TransitDepartures: Codable, Sendable {
     public var departures: [TransitDeparture]
     public var feedStatus: LiveFeedStatus
     public var generatedAt: String
     public var radiusMeters: Int
+    public var stations: [TransitStation]? = nil
 }
 
 public struct LiveVehicle: Codable, Identifiable, Sendable {
@@ -292,6 +300,7 @@ public struct TransitNetwork: Codable, Sendable {
     }
     public struct Station: Codable, Identifiable, Sendable {
         public var id: String
+        public var complexId: String? = nil
         public var name: String
         public var coordinate: Coordinate
     }

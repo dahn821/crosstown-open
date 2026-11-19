@@ -10,6 +10,7 @@ struct JourneyMap: View {
     var liveMode: TravelMode? = nil
     var busStops: [Place] = []
     var selectedLine = ""
+    var highlightedStations: Set<String> = []
     var onCenterChange: ((Coordinate) -> Void)? = nil
     var onStop: ((String, String, Coordinate) -> Void)? = nil
     @State private var snapshot: VehicleSnapshot?
@@ -44,14 +45,16 @@ struct JourneyMap: View {
             }
             if let network = snapshot?.network, liveMode == .subway {
                 ForEach(Array(network.segments.enumerated()), id: \.offset) { _, segment in
-                    MapPolyline(coordinates: segment.points.compactMap { pair in
-                        pair.count == 2 ? CLLocationCoordinate2D(latitude: pair[0], longitude: pair[1]) : nil
-                    }).stroke(networkColor(segment.color).opacity(0.48), lineWidth: 3)
+                    MapPolyline(coordinates: segmentCoordinates(segment)).stroke(.white, style: railStroke(width: 7))
+                }
+                ForEach(Array(network.segments.enumerated()), id: \.offset) { _, segment in
+                    MapPolyline(coordinates: segmentCoordinates(segment))
+                        .stroke(SubwayBadge.color(segment.line, reported: segment.color).opacity(0.92), style: railStroke(width: 4.5))
                 }
                 if queryBounds[2] - queryBounds[0] < 0.11 {
                     ForEach(network.stations) { station in
                         Annotation(station.name, coordinate: CLLocationCoordinate2D(latitude: station.coordinate.latitude, longitude: station.coordinate.longitude)) {
-                            stopButton(station.id, station.name, station.coordinate)
+                            stopButton(station.complexId ?? station.id, station.name, station.coordinate)
                         }
                     }.annotationTitles(.hidden)
                 }
@@ -75,7 +78,22 @@ struct JourneyMap: View {
             }
             ForEach(visibleVehicles(at: context.date)) { vehicle in
                 Annotation(vehicle.line, coordinate: CLLocationCoordinate2D(latitude: vehicle.coordinate.latitude, longitude: vehicle.coordinate.longitude)) {
-                    Button { selectedVehicle = vehicle } label: { VehicleMapPin(vehicle: vehicle, compact: queryBounds[2] - queryBounds[0] > 0.045) }
+                    Button { selectedVehicle = vehicle } label: {
+                        if liveMode == .subway {
+                            SubwayBadge(line: vehicle.line, reportedColor: vehicle.routeColor, size: 22)
+                                .shadow(color: .black.opacity(0.4), radius: 2)
+                                .overlay {
+                                    if let bearing = vehicle.bearing {
+                                        Image(systemName: "location.north.fill").font(.system(size: 9, weight: .bold))
+                                            .foregroundStyle(SubwayBadge.color(vehicle.line, reported: vehicle.routeColor))
+                                            .padding(2).background(.white, in: Circle())
+                                            .offset(y: -17).rotationEffect(.degrees(bearing)).accessibilityHidden(true)
+                                    }
+                                }
+                        } else {
+                            VehicleMapPin(vehicle: vehicle, compact: queryBounds[2] - queryBounds[0] > 0.045)
+                        }
+                    }
                         .buttonStyle(.plain)
                         .accessibilityLabel("\(vehicle.mode == .bus ? "Bus" : "Train") \(vehicle.line). \(vehicle.accuracyLabel). \(vehicle.status). \(vehicle.directionLabel ?? "")")
                 }.annotationTitles(.hidden)
@@ -86,7 +104,15 @@ struct JourneyMap: View {
                 let r = change.region
                 let next = [r.center.longitude - r.span.longitudeDelta / 2, r.center.latitude - r.span.latitudeDelta / 2, r.center.longitude + r.span.longitudeDelta / 2, r.center.latitude + r.span.latitudeDelta / 2].map { ($0 * 10000).rounded() / 10000 }
                 if next != vehicleBounds { vehicleBounds = next }
-                onCenterChange?(Coordinate((r.center.latitude * 1000).rounded() / 1000, (r.center.longitude * 1000).rounded() / 1000))
+                onCenterChange?(Coordinate((r.center.latitude * 10000).rounded() / 10000, (r.center.longitude * 10000).rounded() / 10000))
+            }
+            .overlay {
+                if liveMode == .subway {
+                    Image(systemName: "scope").font(.system(size: 31, weight: .medium))
+                        .foregroundStyle(Theme.blue).padding(3).background(.white, in: Circle())
+                        .shadow(color: .black.opacity(0.22), radius: 3, y: 1)
+                        .allowsHitTesting(false).accessibilityHidden(true)
+                }
             }
             .overlay(alignment: .topTrailing) { if let liveMode { liveCaption(liveMode, now: context.date) } }
             .accessibilityLabel("Map with bus GPS locations, station-based train estimates, and the selected route. Tap a vehicle for its source and report time.")
@@ -116,13 +142,18 @@ struct JourneyMap: View {
             now.timeIntervalSince(v.reportedDate) <= 90 && (liveMode == nil || v.mode == liveMode)
         }
     }
-    private func networkColor(_ color: String?) -> Color {
-        color.flatMap { UInt($0, radix: 16) }.map { Color(hex: $0) } ?? Theme.green
+    private func segmentCoordinates(_ segment: TransitNetwork.Segment) -> [CLLocationCoordinate2D] {
+        segment.points.compactMap { pair in
+            pair.count == 2 ? CLLocationCoordinate2D(latitude: pair[0], longitude: pair[1]) : nil
+        }
+    }
+    private func railStroke(width: CGFloat) -> StrokeStyle {
+        StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round)
     }
     private func stopButton(_ id: String, _ name: String, _ coordinate: Coordinate) -> some View {
         Button { onStop?(id, name, coordinate) } label: {
             Circle().fill(.white)
-                .overlay { Circle().strokeBorder(Theme.mode(liveMode ?? .subway), lineWidth: 2) }
+                .overlay { Circle().strokeBorder(highlightedStations.contains(id) ? Theme.blue : Theme.mode(liveMode ?? .subway), lineWidth: 2) }
                 .frame(width: 12, height: 12).padding(5)
         }.buttonStyle(.plain).accessibilityLabel("Show arrivals at \(name)")
     }
@@ -132,6 +163,44 @@ struct JourneyMap: View {
         let note = vehicleError ?? (mode == .bus && snapshot?.feedStatus.busVehicles?.stale == true ? "Bus GPS unavailable" : label)
         return Text(note).font(.caption2.weight(.semibold)).foregroundStyle(Theme.ink)
             .padding(9).background(.regularMaterial, in: Capsule()).padding(9)
+    }
+}
+
+struct SubwayBadge: View {
+    let line: String
+    let reportedColor: String?
+    var size: CGFloat = 22
+
+    private static let shuttles = ["FS": "Franklin Avenue Shuttle", "GS": "42 Street Shuttle", "H": "Rockaway Park Shuttle"]
+    private static let palette: [(String, UInt)] = [
+        ("123", 0xEE352E), ("456", 0x00933C), ("7", 0xB933AD), ("ACE", 0x0039A6), ("BDFM", 0xFF6319),
+        ("G", 0x6CBE45), ("JZ", 0x996633), ("L", 0xA7A9AC), ("NQRW", 0xFCCC0A), ("S", 0x808183)
+    ]
+    private static func express(_ line: String) -> Bool { ["6X", "7X", "FX"].contains(line) }
+    static func name(_ line: String) -> String { shuttles[line] ?? (express(line) ? "\(line.dropLast()) express" : line) }
+    private static func label(_ line: String) -> String { shuttles[line] != nil ? "S" : express(line) ? String(line.dropLast()) : line }
+    private static func rgb(_ line: String, reported: String?) -> UInt {
+        if let hex = reported, hex.count == 6, let value = UInt(hex, radix: 16) { return value }
+        let service = label(line)
+        return service.count == 1 ? palette.first(where: { $0.0.contains(service) })?.1 ?? 0x4A6371 : 0x4A6371
+    }
+    static func color(_ line: String, reported: String?) -> Color { Color(hex: rgb(line, reported: reported)) }
+
+    var body: some View {
+        let paint = Self.rgb(line, reported: reportedColor)
+        let channels = [16, 8, 0].map { shift in
+            let v = Double((paint >> shift) & 255) / 255
+            return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4)
+        }
+        let luminance = 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+        Text(Self.label(line)).font(.system(size: size * 0.62, weight: .heavy)).lineLimit(1).minimumScaleFactor(0.72)
+            .foregroundStyle(luminance > 0.18 ? .black : .white).frame(width: size, height: size)
+            .background {
+                if Self.express(line) {
+                    RoundedRectangle(cornerRadius: 2).fill(Color(hex: paint))
+                        .frame(width: size * 0.72, height: size * 0.72).rotationEffect(.degrees(45))
+                } else { Circle().fill(Color(hex: paint)) }
+            }.accessibilityLabel(Self.name(line))
     }
 }
 

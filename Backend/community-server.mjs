@@ -5,6 +5,7 @@ import {createTransitousSearch} from './transitous.mjs';
 import {vehicleQuery,vehicleSnapshot} from './vehicles.mjs';
 import {ridePrediction,rideQuery} from './ride.mjs';
 import {bikeStationSnapshot} from './citi-bike.mjs';
+import {nearbySubwayBoard,stationRadius} from './subway-stations.mjs';
 import {setTimeout as wait} from 'node:timers/promises';
 
 const meters=(a,b)=>Math.hypot((a.latitude-b.latitude)*111200,(a.longitude-b.longitude)*84200);
@@ -13,7 +14,7 @@ const json=(value,status=200)=>Response.json(value,{status,headers:{'Cache-Contr
 
 export function createCommunityAPI({lookup,restaurants,busKey='',beforeRequest=async()=>{},fetcher=fetch,contact='https://github.com/dahn821/crosstown-open'}={}){
  configureRoutingData({stations:lookup.stationStructures,index:lookup.index});
- const store=new FeedStore({tripIndex:lookup.index,busKey,fetcher}),cache=new Map();
+ const store=new FeedStore({tripIndex:lookup.index,stationStructures:lookup.stationStructures,busKey,fetcher}),cache=new Map();
  const subwayRoutes=Object.entries(lookup.index.routes||{}).map(([shortName,route])=>({shortName,color:route.route_color}));
  const transitStops=[...Object.entries(lookup.index.stops).map(([id,stop])=>({gtfsId:'nyct:'+id,name:stop.name,lat:stop.latitude,lon:stop.longitude,vehicleMode:'SUBWAY',routes:subwayRoutes})),...lookup.busStops.map(stop=>({...stop,vehicleMode:'BUS',routes:[]}))];
  const landmarks=[{id:'penn',name:'Penn Station',neighborhood:'Midtown West',coordinate:{latitude:40.7505,longitude:-73.9934},selectable:true},{id:'ues',name:'96 St & Lexington Ave',neighborhood:'Upper East Side',coordinate:{latitude:40.785,longitude:-73.9518},selectable:true}];
@@ -92,6 +93,10 @@ export function createCommunityAPI({lookup,restaurants,busKey='',beforeRequest=a
        if(!store.gbfs.get('station_status'))return json({error:'Current Citi Bike reports are unavailable.',status:store.status().bikes},503);
        const snapshot=bikeStationSnapshot(store);
        return json({...snapshot,stations:snapshot.stations.map(station=>({...station,metersAway:meters(coordinate,station.coordinate)})).filter(station=>station.metersAway<5000).sort((a,b)=>a.metersAway-b.metersAway).slice(0,20)});
+     }
+     if(url.searchParams.get('mode')==='subway'){
+       const board=nearbySubwayBoard(store,coordinate,{stop:url.searchParams.get('stop'),line:url.searchParams.get('line')});
+       return json({...board,feedStatus:store.status(),generatedAt:new Date().toISOString(),radiusMeters:stationRadius});
      }
      const stops=transitStops.map(stop=>({...stop,distance:meters(coordinate,{latitude:stop.lat,longitude:stop.lon})})).filter(stop=>stop.distance<=1200).sort((a,b)=>a.distance-b.distance);
      return json({departures:store.departures(stops,Date.now(),{mode:url.searchParams.get('mode'),stop:url.searchParams.get('stop')}),feedStatus:store.status(),generatedAt:new Date().toISOString(),radiusMeters:1200});

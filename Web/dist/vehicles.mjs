@@ -1,4 +1,5 @@
 import {icon} from './icons.mjs';
+import {subwayBullet,subwayStyle} from './subway-ui.mjs';
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const age=v=>Math.max(0,Math.floor(Date.now()/1000-v.reportedAtSeconds));
 const color=v=>/^[0-9a-f]{6}$/i.test(v.routeColor)?'#'+v.routeColor:v.mode==='bus'?'#2d5bff':'#25815f';
@@ -16,6 +17,11 @@ export function attachVehicleMap({map,L,api,getRoute,onSnapshot=()=>{}}){
   }
   function markerIcon(vehicle){
     const gps=vehicle.accuracy==='gps',compact=map.getZoom()<15,heading=vehicle.bearing==null?'':`<span class="vehicle-heading" aria-hidden="true" style="transform:rotate(${Number(vehicle.bearing)}deg)"><svg viewBox="0 0 16 16"><path d="M8 1 14 14 8 11 2 14Z"/></svg></span>`;
+    if(view==='subway'){
+      const style=subwayStyle(vehicle.line,vehicle.routeColor);
+      const html=`<div class="subway-train" style="--vehicle-color:${style.color}">${subwayBullet(vehicle.line,vehicle.routeColor)}${heading}</div>`;
+      return L.divIcon({className:'vehicle-pin-container',html,iconSize:[1,1],iconAnchor:[0,0]});
+    }
     const content=(compact?(vehicle.mode==='bus'?icon('bus'):`<b>${esc(vehicle.line)}</b>`):`${icon(vehicle.mode)}<b>${esc(vehicle.line)}</b>`)+heading;
     const html=`<div class="vehicle-pin ${gps?'gps':'station-estimate'} ${compact?'compact':''}" style="--vehicle-color:${color(vehicle)}">${content}</div>`;
     return L.divIcon({className:'vehicle-pin-container',html,iconSize:[1,1],iconAnchor:[0,0]});
