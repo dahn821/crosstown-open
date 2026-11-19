@@ -21,6 +21,10 @@ export const defaults=()=>({priority:'fastest',modes:['walk','bike','subway','bu
 const placeId=id=>String(id||'').split(':').at(-1);
 const coordinate=p=>({latitude:p.lat,longitude:p.lon});
 const label=p=>({id:p.stop?.gtfsId||p.vehicleRentalStation?.stationId||`coord:${p.lat},${p.lon}`,name:p.name,neighborhood:p.stop?'Subway station':'New York City',coordinate:coordinate(p),selectable:true});
+function handoffLabel(place,adjacent){
+  const placeholder=name=>!name||name==='START'||name==='END';
+  return label(placeholder(place.name)&&!placeholder(adjacent?.name)?{...place,name:adjacent.name}:place);
+}
 const toInput=p=>({label:p.name,location:{coordinate:p.coordinate}});
 const stopInput=id=>({location:{stopLocation:{stopLocationId:'nyct:'+id}}});
 const distance=(a,b)=>{const r=Math.PI/180,h=Math.sin((b.latitude-a.latitude)*r/2)**2+Math.cos(a.latitude*r)*Math.cos(b.latitude*r)*Math.sin((b.longitude-a.longitude)*r/2)**2;return 12742000*Math.asin(Math.min(1,Math.sqrt(h)));};
@@ -107,7 +111,8 @@ export function normalize(raw,request,store){
       fare+=p.citiBikeMember?Math.max(0,Math.ceil(ride-45))*27:499+Math.max(0,Math.ceil(ride-30))*41;
       source='Live Citi Bike availability · estimated street time';
     }
-    const from=i===0?request.origin:label(l.from),to=i===raw.legs.length-1?request.destination:label(l.to);
+    const from=i===0?request.origin:handoffLabel(l.from,raw.legs[i-1].to);
+    const to=i===raw.legs.length-1?request.destination:handoffLabel(l.to,raw.legs[i+1].from);
     let instruction=mode==='walk'?`Walk to ${to.name}`:mode==='bike'?`Ride ${p.bikeSource==='ownBike'?'your bike':'a classic Citi Bike'} to ${to.name}`:`Take the ${line} ${l.headsign?`toward ${l.headsign}`:`to ${to.name}`}`;
     const duration=(arrival-clock)/60000;
     const coveredTransfer=mode==='walk'&&l.from.stop?.parentStation?.gtfsId&&l.from.stop.parentStation.gtfsId===l.to.stop?.parentStation?.gtfsId;

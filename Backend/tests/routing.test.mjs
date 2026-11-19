@@ -54,6 +54,16 @@ test('live rental routes require classic bikes, an operating pickup, and a fresh
  assert.equal(normalize(raw,r,store).fareCents,27);r.preferences.citiBikeMember=false;assert.equal(normalize(raw,r,store).fareCents,1155);
  pickup.classicBikes=0;assert.equal(normalize(raw,r,store),null);pickup.classicBikes=2;dropoff.docks=0;assert.equal(normalize(raw,r,store),null);dropoff.docks=5;dropoff.reportedAt-=301000;assert.equal(normalize(raw,r,store),null);
 });
+test('street endpoints at a bike handoff use the connecting dock names',()=>{
+ const now=Date.now(),pickup={id:'a',classicBikes:3,docks:6,isRenting:true,isReturning:true,reportedAt:now},dropoff={...pickup,id:'b'};
+ const dock=(name,id)=>({...point(name),vehicleRentalStation:{stationId:'citibike:'+id}});
+ const raw={legs:[{mode:'WALK',from:point('START'),to:point('END'),duration:40},
+  {mode:'BICYCLE',rentedBike:true,from:dock('Pickup Dock','a'),to:dock('Return Dock','b'),duration:250},
+  {mode:'WALK',from:point('START'),to:point('END'),duration:45}]};
+ const result=normalize(raw,request({}),{bikeStations:()=>[pickup,dropoff],status:()=>({bikes:{stale:false}})});
+ assert.equal(result.legs[0].instruction,'Walk to Pickup Dock');
+ assert.equal(result.legs[2].from.name,'Return Dock');
+});
 test('personal bikes avoid rental fees and cannot silently board buses',()=>{
  const r=request({bikeSource:'ownBike'}),raw={legs:[{mode:'BICYCLE',duration:600,from:point('A'),to:point('B')}]};
  assert.equal(normalize(raw,r,{bikeStations:()=>[]}).fareCents,0);
