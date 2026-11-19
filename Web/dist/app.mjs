@@ -143,9 +143,8 @@ function detail(route,{focus=false,expand=false}={}){
  journeyView('preview');
  const toolbar=[['refresh-detail','Refresh this trip','refresh'],['save','Save this trip','bookmark'],['share','Share this route','share'],['journey-size','Resize journey outline','chevron']];
  preview.innerHTML=`<header class="journey-header"><button class="journey-button" data-action="journey-back" aria-label="Back to routes">${icon('back')} Routes</button><div class="journey-actions">${toolbar.map(([action,label,symbol])=>`<button class="journey-button ${action==='journey-size'?'journey-resize':''}" data-action="${action}" aria-label="${label}">${icon(symbol)}</button>`).join('')}</div></header>
-  <div class="journey-summary"><h2 id="journey-title" tabindex="-1">${mins(route.minutes)} min <time datetime="${esc(route.arrivalTime)}">Arrive ${clock(route.arrivalTime)}</time></h2><p>${esc(routeTitle(route))} · ${money(route.fareCents)} est. · ${mins(route.outdoorMinutes)} min outside</p></div>
-  <div class="journey-outline" tabindex="0" aria-label="Journey outline"><h3>Journey outline</h3><div class="timeline">${route.legs.map((leg,index)=>journeyLeg(route,leg,index)).join('')}</div><p class="hint">${route.legs.some(leg=>leg.bikePickup)?`${esc(route.fareAssumption)}. `:''}Checked ${clock(route.generatedAt)}.</p></div>
-  <footer class="journey-footer"><button class="primary" data-action="navigate">${icon('navigate')} Start navigation</button></footer>`;
+  <div class="journey-summary"><div><h2 id="journey-title" tabindex="-1">${mins(route.minutes)} min <time datetime="${esc(route.arrivalTime)}">Arrive ${clock(route.arrivalTime)}</time></h2><p>${esc(routeTitle(route))} · ${money(route.fareCents)} est. · ${mins(route.outdoorMinutes)} min outside</p></div><button class="primary" data-action="navigate" aria-label="Start navigation">${icon('navigate')} Start</button></div>
+  <div class="journey-outline" tabindex="0" aria-label="Journey outline"><h3>Journey outline</h3><div class="timeline">${route.legs.map((leg,index)=>journeyLeg(route,leg,index)).join('')}</div><p class="hint">${route.legs.some(leg=>leg.bikePickup)?`${esc(route.fareAssumption)}. `:''}Checked ${clock(route.generatedAt)}.</p></div>`;
  $('.journey-outline',preview).scrollTop=expand?0:scroll;
  if(expand)mobileLayout.showRoutes();
  drawRoute(expand);
