@@ -45,10 +45,15 @@ export class FeedStore {
   }
   async refreshBus(){
     if(!this.busKey)return;
-    try{
-      const bytes=await this.get('https://gtfsrt.prod.obanyc.com/tripUpdates?key='+encodeURIComponent(this.busKey),true),message=rt.FeedMessage.decode(bytes);
-      this.entries.set('bus',{bytes,message,sourceTimestamp:asNumber(message.header.timestamp)*1000,fetchedAt:Date.now(),error:null});
-    }catch{this.entries.set('bus',{...this.entries.get('bus'),error:'Bus Time feed could not be refreshed.'});}
+    if(this.pending.has('bus'))return this.pending.get('bus');
+    const job=(async()=>{
+      try{
+        const bytes=await this.get('https://gtfsrt.prod.obanyc.com/tripUpdates?key='+encodeURIComponent(this.busKey),true),message=rt.FeedMessage.decode(bytes);
+        this.entries.set('bus',{bytes,message,sourceTimestamp:asNumber(message.header.timestamp)*1000,fetchedAt:Date.now(),error:null});
+      }catch{this.entries.set('bus',{...this.entries.get('bus'),error:'Bus Time feed could not be refreshed.'});}
+    })().finally(()=>this.pending.delete('bus'));
+    this.pending.set('bus',job);
+    return job;
   }
   async refreshBusVehicles(){
     if(!this.busKey)return;

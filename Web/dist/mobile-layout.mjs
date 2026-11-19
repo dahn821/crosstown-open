@@ -6,9 +6,11 @@ export function attachMobileLayout({map,onFit}){
   let snap='peek',drag,ignoreClick=false;
   function points(){
     const safe=parseFloat(getComputedStyle(card).paddingBottom)||0;
-    const top=document.querySelector('.search-card').getBoundingClientRect().bottom+12;
+    const navigation=card.dataset.content==='navigation';
+    const top=document.querySelector(navigation?'#navigation-prompt':'.search-card').getBoundingClientRect().bottom+12;
     const full=Math.max(200,innerHeight-top);
-    return {peek:128+safe,half:Math.min(full,Math.max(300,innerHeight*.48)),full};
+    const peek=navigation?152:card.dataset.content==='preview'?186:128;
+    return {peek:peek+safe,half:Math.min(full,Math.max(280,innerHeight*.43)),full};
   }
   function setSnap(value){
     snap=value;card.dataset.sheetState=value;card.classList.remove('collapsed');
@@ -55,15 +57,16 @@ export function attachMobileLayout({map,onFit}){
   }
   grip.addEventListener('pointerup',endDrag);
   grip.addEventListener('pointercancel',()=>{drag=null;setSnap(snap);});
-  map.on('dragstart',()=>{if(media.matches)setSnap('peek');});
+  map.on('dragstart',()=>{if(media.matches&&card.dataset.content!=='navigation')setSnap('peek');});
   new ResizeObserver(()=>{
     document.documentElement.style.setProperty('--results-height',card.getBoundingClientRect().height+'px');
   }).observe(card);
   const resize=()=>setSnap(snap);media.addEventListener('change',resize);window.addEventListener('resize',resize);
   setSnap('peek');
-  return {showRoutes:()=>{if(media.matches)setSnap('half');},fitPadding(){
+  return {showRoutes:()=>{if(media.matches)setSnap('half');},showNavigation:()=>{if(media.matches)setSnap('peek');},resizeJourney(){if(media.matches)setSnap(snap==='full'?'half':'full');},fitPadding(){
     if(!media.matches)return {paddingTopLeft:[430,95],paddingBottomRight:[65,85]};
     if(snap==='full')setSnap('peek');
-    return {paddingTopLeft:[24,document.querySelector('.search-card').getBoundingClientRect().bottom+20],paddingBottomRight:[65,points()[snap]+24]};
+    const top=document.querySelector(card.dataset.content==='navigation'?'#navigation-prompt':'.search-card').getBoundingClientRect().bottom;
+    return {paddingTopLeft:[24,top+20],paddingBottomRight:[65,points()[snap]+24]};
   }};
 }

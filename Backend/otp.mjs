@@ -114,7 +114,8 @@ export function normalize(raw,request,store){
     const outdoor=mode==='walk'?(coveredTransfer?0:duration):mode==='bike'?duration:mode==='bus'?wait:wait*(1-isUnderground(l.from.stop?.gtfsId));
     const underground=mode==='subway'?ride*undergroundFraction(l)+wait*isUnderground(l.from.stop?.gtfsId):coveredTransfer?duration:0;
     const coordinates=l.coordinates|| (l.legGeometry?.points?decodePolyline(l.legGeometry.points):[from.coordinate,to.coordinate]);
-    legs.push({id:String(l.id||i)+'-'+mode,from,to,mode,line,tripId,duration,waitingMinutes:wait,setupMinutes:mode==='bike'&&l.rentedBike?2:0,outdoorMinutes:outdoor,undergroundMinutes:underground,instruction,coordinates,bikeSource:mode==='bike'?p.bikeSource:undefined,realtime,dataSource:source,predictionReportedAt,departureTime:new Date(departure).toISOString(),arrivalTime:new Date(arrival).toISOString(),routeColor:l.route?.color||null,bikePickup,bikeReturn,steps:l.steps||[]});
+    const stops = line ? {boardStopId:placeId(l.from.stop?.gtfsId),alightStopId:placeId(l.to.stop?.gtfsId)} : {};
+    legs.push({id:String(l.id||i)+'-'+mode,from,to,mode,line,tripId,...stops,duration,waitingMinutes:wait,setupMinutes:mode==='bike'&&l.rentedBike?2:0,outdoorMinutes:outdoor,undergroundMinutes:underground,instruction,coordinates,bikeSource:mode==='bike'?p.bikeSource:undefined,realtime,dataSource:source,predictionReportedAt,departureTime:new Date(departure).toISOString(),arrivalTime:new Date(arrival).toISOString(),routeColor:l.route?.color||null,bikePickup,bikeReturn,steps:l.steps||[]});
     clock=arrival;
   }
   const sum=(key,filter=()=>true)=>legs.filter(filter).reduce((v,l)=>v+l[key],0);

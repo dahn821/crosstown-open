@@ -9,7 +9,7 @@ export function attachVehicleMap({map,L,api,getRoute}){
   control.innerHTML=`<button class="vehicle-layer-title" aria-expanded="false">${icon('activity')} Live vehicles <span>⌄</span></button><div class="vehicle-layer-options" hidden><label><input type="checkbox" name="bus" checked>Bus GPS</label><label><input type="checkbox" name="subway" checked>Train station estimates</label><label><input type="checkbox" name="routeOnly">Selected route lines</label><p>Subway markers are at reported or next stations. Exact positions between stations are unavailable.</p></div><p class="vehicle-map-status" role="status">Checking vehicle reports…</p><button class="vehicle-expand">Expand live map</button>`;
   document.querySelector('#app').append(control);
   const status=control.querySelector('.vehicle-map-status'),options=control.querySelector('.vehicle-layer-options'),title=control.querySelector('.vehicle-layer-title');
-  let controller,requestID=0,moveTimer,snapshot;
+  let controller,requestID=0,moveTimer,snapshot,suspended=false;
   const modeEnabled=mode=>control.querySelector(`[name="${mode}"]`).checked;
   function markerIcon(vehicle){
     const gps=vehicle.accuracy==='gps',compact=map.getZoom()<15,heading=vehicle.bearing==null?'':`<span class="vehicle-heading" aria-hidden="true" style="transform:rotate(${Number(vehicle.bearing)}deg)"><svg viewBox="0 0 16 16"><path d="M8 1 14 14 8 11 2 14Z"/></svg></span>`;
@@ -40,7 +40,7 @@ export function attachVehicleMap({map,L,api,getRoute}){
     status.textContent=text;
   }
   async function refresh(){
-    if(document.hidden)return;
+    if(document.hidden||suspended)return;
     const modes=['bus','subway'].filter(modeEnabled);
     if(!modes.length){controller?.abort();requestID++;snapshot=null;layer.clearLayers();markers.clear();status.textContent='Vehicle layers hidden';return;}
     const id=++requestID;controller?.abort();controller=new AbortController();
@@ -63,5 +63,10 @@ export function attachVehicleMap({map,L,api,getRoute}){
   map.on('moveend',()=>{clearTimeout(moveTimer);moveTimer=setTimeout(refresh,250);});
   document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});
   setInterval(refresh,15000);setInterval(render,5000);refresh();
-  return {refresh};
+  return {refresh,setSuspended(value){
+    if(suspended===value)return;
+    suspended=value;
+    if(value){controller?.abort();requestID++;snapshot=null;layer.clearLayers();markers.clear();}
+    else refresh();
+  }};
 }
