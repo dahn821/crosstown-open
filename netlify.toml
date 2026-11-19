@@ -1,0 +1,28 @@
+[build]
+  command = "node scripts/check-source.mjs"
+  publish = "Web/dist"
+  functions = "netlify/functions"
+
+[build.environment]
+  NODE_VERSION = "24"
+
+[functions]
+  node_bundler = "esbuild"
+  included_files = ["Backend/data/nyc-lookup.json", "Backend/data/restaurants.json"]
+
+[[redirects]]
+  from = "/basemap/*"
+  to = "https://tiles.openfreemap.org/:splat"
+  status = 200
+
+[[redirects]]
+  from = "/tiles/*"
+  to = "https://tile.openstreetmap.org/:splat"
+  status = 200
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    X-Robots-Tag = "noindex, noarchive"
+    Referrer-Policy = "strict-origin-when-cross-origin"

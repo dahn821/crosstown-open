@@ -1,0 +1,11 @@
+{
+  "name": "Crosstown",
+  "short_name": "Crosstown",
+  "description": "NYC routes with live MTA predictions and Citi Bike reports.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#eef2f3",
+  "theme_color": "#ffffff",
+  "icons": [{"src":"/app-icon.png","sizes":"1024x1024","type":"image/png","purpose":"any"}]
+}

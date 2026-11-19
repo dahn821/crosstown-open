@@ -1,0 +1,262 @@
+import SwiftUI
+import CrosstownCore
+
+struct SourcesView: View {
+    @Bindable var model: AppModel
+    @State private var server = ""
+    @State private var connecting = false
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text("Current information.\nClear about the gaps.").font(.title2.weight(.semibold))
+                    Text("Route searches use MTA stop predictions, current Citi Bike reports, and street paths. Street times, fares and outdoor exposure are estimates.").font(.subheadline).foregroundStyle(Theme.secondary)
+                }
+                Section("Live feeds") {
+                    HStack { Text("NYC routing"); Spacer(); Text(model.health?.router.ready == true ? "Connected" : "Not connected").foregroundStyle(Theme.secondary) }
+                    HStack { Text("Subway"); Spacer(); Text("\(model.health?.feeds.subway.filter { !$0.stale }.count ?? 0) / 8 feeds current").foregroundStyle(Theme.secondary) }
+                    HStack { Text("Citi Bike"); Spacer(); Text(model.health?.feeds.bikes.stale == false ? "Current reports" : "Unavailable / stale").foregroundStyle(Theme.secondary) }
+                    HStack { Text("Bus Time"); Spacer(); Text(model.health?.feeds.bus.configured == true ? (model.health?.feeds.bus.stale == false ? "Current reports" : "Unavailable / stale") : "API key needed").foregroundStyle(Theme.secondary) }
+                    if model.health?.feeds.bus.configured != true {
+                        Text("Connect the key from MTA’s email in the web app’s Sources → Connect Bus Time field on the Mac running Crosstown. Keep the key out of chat.").font(.footnote).foregroundStyle(Theme.secondary)
+                        if let setup = URL(string: model.apiBaseURLString + "/?setup=bus-time"), ["localhost", "127.0.0.1", "::1"].contains(setup.host ?? "") {
+                            Link("Open private Bus Time setup", destination: setup)
+                        }
+                    }
+                    Text("A transit leg is labeled live only when the current feed reports a reachable train or bus at both your boarding and alighting stops. Turn off live-only transit to compare schedules.").font(.footnote).foregroundStyle(Theme.secondary)
+                }
+                Section("Your route server") {
+                    TextField("http://your-mac.local:4173", text: $server).textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                    Button(connecting ? "Connecting…" : "Connect") {
+                        connecting = true
+                        Task { await model.configureServer(server); connecting = false }
+                    }.disabled(connecting)
+                    if let error = model.error { Text(error).font(.footnote).foregroundStyle(Theme.secondary) }
+                    Text("The iPhone simulator connects to localhost:4173 after you start Crosstown on your Mac. A physical iPhone needs an address it can reach on your local network or an HTTPS server.").font(.footnote).foregroundStyle(Theme.secondary)
+                }
+                Section("Sources") {
+                    if model.health?.router.mode == "community" {
+                        Link("Transitous data sources", destination: URL(string: "https://transitous.org/sources/")!)
+                        Text("Trip coordinates are sent to Transitous for routing. Tap Refresh to request a new plan.").font(.footnote).foregroundStyle(Theme.secondary)
+                    }
+                    Link("MTA data", destination: URL(string: "https://www.mta.info/developers")!)
+                    Link("Citi Bike reports", destination: URL(string: "https://citibikenyc.com/system-data")!)
+                    Link("Request a Bus Time key", destination: URL(string: "https://register.developer.obanyc.com/")!)
+                }
+            }.navigationTitle("Sources & connection").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+                .task { server = model.apiBaseURLString; await model.refreshHealth() }
+        }.presentationDragIndicator(.visible)
+    }
+}
+
+private enum TripTimeMode: String, CaseIterable {
+    case now = "Leave now", departAt = "Depart at", arriveBy = "Arrive by"
+}
+
+struct TripTimePicker: View {
+    let request: PlanRequest
+    let onApply: (Date?, Date?, Bool) -> Void
+    @State private var mode: TripTimeMode
+    @State private var date: Date
+    @State private var includeSchedules: Bool
+    @Environment(\.dismiss) private var dismiss
+
+    init(request: PlanRequest, onApply: @escaping (Date?, Date?, Bool) -> Void) {
+        self.request = request; self.onApply = onApply
+        _mode = State(initialValue: request.arrivalTime != nil ? .arriveBy : request.departureTime != nil ? .departAt : .now)
+        _date = State(initialValue: request.arrivalTime ?? request.departureTime ?? Date().addingTimeInterval(900))
+        _includeSchedules = State(initialValue: !request.preferences.requireLiveTransit)
+    }
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Picker("Travel time", selection: $mode) {
+                        ForEach(TripTimeMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }.pickerStyle(.segmented)
+                    if mode != .now {
+                        DatePicker(mode.rawValue, selection: $date, in: Date()...Date().addingTimeInterval(14 * 86400), displayedComponents: [.date, .hourAndMinute])
+                            .environment(\.timeZone, TimeZone(identifier: "America/New_York")!)
+                        Text("All times are New York time. Choose a time within the next 14 days.").font(.footnote).foregroundStyle(Theme.secondary)
+                    }
+                }
+                if mode != .now {
+                    Section("Transit predictions") {
+                        Toggle("Include scheduled transit", isOn: $includeSchedules)
+                        Text("MTA reports trains and buses currently in service. Future trips need published schedules. Each transit leg shows whether its time is live or scheduled.").font(.footnote).foregroundStyle(Theme.secondary)
+                        Text("Current bike and dock counts do not predict availability at your selected time.").font(.footnote).foregroundStyle(Theme.secondary)
+                    }
+                }
+            }
+            .navigationTitle("Trip time").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Apply time") {
+                        onApply(mode == .departAt ? date : nil, mode == .arriveBy ? date : nil, mode == .now ? !request.preferences.requireLiveTransit : includeSchedules)
+                        dismiss()
+                    }.disabled(mode != .now && date < Date().addingTimeInterval(-60))
+                }
+            }
+            .onChange(of: mode) { _, value in if value != .now { includeSchedules = true } }
+        }.presentationDragIndicator(.visible)
+    }
+}
+
+struct TransitBoard: View {
+    @Bindable var model: AppModel
+    let onSources: () -> Void
+    let onMap: () -> Void
+    @State private var board: TransitDepartures?
+    @State private var error: String?
+    @State private var loading = false
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                Text("Live transit").font(.system(size: 30, weight: .semibold)).tracking(-1)
+                Text("Upcoming departures within 1.2 km of \(model.origin?.name ?? "your start"). Allow time to reach the stop. Refreshes every 30 seconds.")
+                    .font(.subheadline).foregroundStyle(Theme.secondary)
+                Button(action: onMap) { Label("Open live vehicle map", systemImage: "map").frame(maxWidth: .infinity).padding(.vertical, 6) }
+                    .buttonStyle(.borderedProminent)
+                HStack {
+                    if let board { Text("Checked \(transitClock(board.generatedAt))").font(.caption).foregroundStyle(Theme.secondary) }
+                    Spacer()
+                    Button { Task { await refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }.disabled(loading)
+                }
+                if loading && board == nil { ProgressView("Checking MTA predictions…") }
+                if let error {
+                    Text(error).font(.subheadline).foregroundStyle(Theme.secondary)
+                    Button("Check Sources", action: onSources)
+                }
+                if let board {
+                    departureSection(.subway, board: board)
+                    departureSection(.bus, board: board)
+                }
+            }.padding(24)
+        }
+        .refreshable { await refresh() }
+        .task(id: model.apiBaseURLString + "|" + (model.origin?.id ?? "")) {
+            while !Task.isCancelled {
+                await refresh()
+                do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            }
+        }
+    }
+    private func departureSection(_ mode: TravelMode, board: TransitDepartures) -> some View {
+        let rows = Array(board.departures.filter { $0.mode == mode }.prefix(24))
+        return VStack(alignment: .leading, spacing: 12) {
+            Label(mode == .subway ? "Trains" : "Buses", systemImage: mode.symbol).font(.title3.weight(.semibold))
+            if mode == .bus && board.feedStatus.bus.configured != true {
+                Text("Live buses are not connected. Add your MTA Bus Time key in the private web setup on your Mac.").font(.subheadline).foregroundStyle(Theme.secondary)
+                Button("Connect Bus Time", action: onSources)
+            } else if rows.isEmpty {
+                Text((mode == .bus ? board.feedStatus.bus.stale : board.feedStatus.subway.allSatisfy(\.stale)) ? "Current MTA predictions are unavailable. Check Sources or refresh." : "No upcoming departures reported at nearby stops.")
+                    .font(.subheadline).foregroundStyle(Theme.secondary)
+            } else {
+                ForEach(rows) { departure in
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        departureRow(departure, now: context.date)
+                    }
+                }
+            }
+        }.padding(18).frame(maxWidth: .infinity, alignment: .leading).background(.white, in: .rect(cornerRadius: 20))
+    }
+    private func departureRow(_ departure: TransitDeparture, now: Date) -> some View {
+        let seconds = (transitDate(departure.departureTime) ?? now).timeIntervalSince(now)
+        let age = max(0, Int(now.timeIntervalSince(transitDate(departure.predictionReportedAt) ?? now)))
+        return HStack(alignment: .top, spacing: 12) {
+            Text(departure.line).font(.caption.bold()).foregroundStyle(.white).padding(8)
+                .background(Theme.mode(departure.mode), in: .rect(cornerRadius: 10))
+            VStack(alignment: .leading, spacing: 5) {
+                Text(departure.stop.name).font(.subheadline.weight(.semibold))
+                Text([departure.direction, "\(Int(departure.metersAway)) m from start"].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
+                    .font(.caption).foregroundStyle(Theme.secondary)
+                Text("MTA report \(age)s ago").font(.caption2).foregroundStyle(Theme.secondary)
+            }
+            Spacer(minLength: 4)
+            VStack(alignment: .trailing, spacing: 5) {
+                Text(seconds < -30 ? "Departed" : seconds < 60 ? "Due" : "\(Int(ceil(seconds / 60))) min").font(.headline).foregroundStyle(Theme.green)
+                Text(transitClock(departure.departureTime)).font(.caption).foregroundStyle(Theme.secondary)
+            }
+        }.padding(.vertical, 8)
+    }
+    private func refresh() async {
+        guard let origin = model.origin, let url = URL(string: model.apiBaseURLString) else { return }
+        let server = model.apiBaseURLString
+        loading = true
+        do {
+            let result = try await LiveRoutingClient(baseURL: url).departures(near: origin.coordinate)
+            guard !Task.isCancelled, server == model.apiBaseURLString, origin.id == model.origin?.id else { return }
+            board = result; error = nil
+        } catch {
+            guard !Task.isCancelled else { return }
+            board = nil; self.error = error.localizedDescription
+        }
+        loading = false
+    }
+}
+
+private func transitDate(_ value: String) -> Date? {
+    let parser = ISO8601DateFormatter(); parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return parser.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+}
+private func transitClock(_ value: String) -> String {
+    guard let date = transitDate(value) else { return "—" }
+    let formatter = DateFormatter(); formatter.timeZone = TimeZone(identifier: "America/New_York"); formatter.dateFormat = "h:mm:ss a"
+    return formatter.string(from: date)
+}
+
+struct PlacePicker: View {
+    let places: [Place]
+    let title: String
+    let search: (String) async throws -> [Place]
+    let onUseCurrentLocation: (() -> Void)?
+    let onSelect: (Place) -> Void
+    @State private var query = ""
+    @State private var results: [Place] = []
+    @State private var loading = false
+    @State private var error: String?
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            List {
+                if let onUseCurrentLocation {
+                    Button { onUseCurrentLocation(); dismiss() } label: {
+                        Label("Use current location", systemImage: "location.fill")
+                    }
+                }
+                if loading { ProgressView("Searching NYC…") }
+                if let error { Text(error).font(.footnote).foregroundStyle(Theme.secondary) }
+                Section(query.isEmpty ? "Recent places" : "Places") {
+                    ForEach(results) { place in
+                        Button { onSelect(place); dismiss() } label: {
+                            HStack(spacing: 15) {
+                                Image(systemName: "mappin").foregroundStyle(Theme.blue).frame(width: 23)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(place.name).foregroundStyle(Theme.ink)
+                                    Text(place.neighborhood).font(.caption).foregroundStyle(Theme.secondary)
+                                }
+                            }.padding(.vertical, 7)
+                        }
+                    }
+                }
+            }.searchable(text: $query, prompt: "Search places, restaurants or addresses").navigationTitle(title)
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+                .task(id: query) {
+                    if query.isEmpty { results = places.filter { $0.id != PlanRequest.currentLocationID }; loading = false; return }
+                    loading = true; results = []; error = nil
+                    do {
+                        try await Task.sleep(for: .milliseconds(500))
+                        let found = try await search(query)
+                        guard !Task.isCancelled else { return }
+                        results = found; error = nil
+                    } catch is CancellationError { return }
+                    catch { self.error = error.localizedDescription }
+                    loading = false
+                }
+        }.presentationDragIndicator(.visible)
+    }
+}

@@ -1,0 +1,3 @@
+export const defaults=()=>({priority:'fastest',modes:['walk','bike','subway','bus'],maxFareCents:1500,maxWalkingMinutes:30,maxBikingMinutes:45,maxTransfers:2,citiBikeMember:true,bikeSource:'citiBike',walkingPace:'brisk',timeWeight:70,costWeight:25,outsideWeight:25,undergroundWeight:0,requireLiveTransit:true});
+export const labels={fastest:'Fastest',cost:'Spend less',aboveGround:'Above ground',sheltered:'Less outside',custom:'My mix'};
+export function routeTitle(route){const names=[];for(const l of route.legs.filter(l=>l.mode!=='walk')){const name=l.mode==='bike'?(l.bikeSource==='ownBike'?'My bike':'Citi Bike'):l.lineOptions?.map(option=>option.line).join('/')||l.line||l.mode;if(names.at(-1)!==name)names.push(name);}return names.join(' → ')||'Walk';}
