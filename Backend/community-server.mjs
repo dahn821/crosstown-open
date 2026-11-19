@@ -4,6 +4,7 @@ import {route,configureRoutingData,validateRequest} from './otp.mjs';
 import {createTransitousSearch} from './transitous.mjs';
 import {vehicleQuery,vehicleSnapshot} from './vehicles.mjs';
 import {ridePrediction,rideQuery} from './ride.mjs';
+import {bikeStationSnapshot} from './citi-bike.mjs';
 import {setTimeout as wait} from 'node:timers/promises';
 
 const meters=(a,b)=>Math.hypot((a.latitude-b.latitude)*111200,(a.longitude-b.longitude)*84200);
@@ -71,12 +72,16 @@ export function createCommunityAPI({lookup,restaurants,busKey='',beforeRequest=a
        const deadline=AbortSignal.timeout(22000);
        await feeds();
        const adapter=createTransitousSearch(store,{fetcher,cache,contact,leaveNow:!input.departureTime&&!input.arrivalTime,beforeRequest:reserveProviderRequest,onRateLimit:pauseProvider,deadline});
-       const result=await route(input,store,{searcher:adapter.search,bikeCandidateLimit:1,rentalTransitFamilies:false,egressBikeConnections:true});
+       const result=await route(input,store,{searcher:adapter.search,bikeCandidateLimit:1,rentalTransitFamilies:false,egressBikeConnections:true,lowAssistPickupLimit:2});
        result.router={engine:'MOTIS 2 / Transitous',mode:'community'};
        result.searchBounds={...result.searchBounds,windowMinutes:15,extraBikeConnections:2,bikeDockPairsPerAccess:1};
        result.notice='Routes use Transitous street and schedule data, checked against current MTA predictions and Citi Bike reports. Times are estimates and availability can change.';
        return json(result);
      }finally{activePlans--;}
+   }
+   if(pathname==='/api/bike-stations'&&request.method==='GET'){
+     if(!store.bikeFetchedAt||Date.now()-store.bikeFetchedAt>30000)await store.refreshBikes();
+     return json(bikeStationSnapshot(store));
    }
    if(['/api/bikes','/api/transit','/api/vehicles'].includes(pathname)&&request.method==='GET'){
      await feeds();
@@ -84,11 +89,12 @@ export function createCommunityAPI({lookup,restaurants,busKey='',beforeRequest=a
      const coordinate={latitude:Number(url.searchParams.get('lat')),longitude:Number(url.searchParams.get('lon'))};
      if(!url.searchParams.has('lat')||!url.searchParams.has('lon')||!withinNYC(coordinate))return json({error:'Choose a start in New York City.'},400);
      if(pathname==='/api/bikes'){
-       const status=store.status().bikes;if(!store.gbfs.get('station_status'))return json({error:'Current Citi Bike reports are unavailable.',status},503);
-       return json({...status,stationCount:status.stations,stations:store.bikeStations().map(station=>({...station,metersAway:meters(coordinate,station.coordinate)})).filter(station=>station.metersAway<5000).sort((a,b)=>a.metersAway-b.metersAway).slice(0,20)});
+       if(!store.gbfs.get('station_status'))return json({error:'Current Citi Bike reports are unavailable.',status:store.status().bikes},503);
+       const snapshot=bikeStationSnapshot(store);
+       return json({...snapshot,stations:snapshot.stations.map(station=>({...station,metersAway:meters(coordinate,station.coordinate)})).filter(station=>station.metersAway<5000).sort((a,b)=>a.metersAway-b.metersAway).slice(0,20)});
      }
      const stops=transitStops.map(stop=>({...stop,distance:meters(coordinate,{latitude:stop.lat,longitude:stop.lon})})).filter(stop=>stop.distance<=1200).sort((a,b)=>a.distance-b.distance);
-     return json({departures:store.departures(stops),feedStatus:store.status(),generatedAt:new Date().toISOString(),radiusMeters:1200});
+     return json({departures:store.departures(stops,Date.now(),{mode:url.searchParams.get('mode'),stop:url.searchParams.get('stop')}),feedStatus:store.status(),generatedAt:new Date().toISOString(),radiusMeters:1200});
    }
    return json({error:'Not found.'},404);
   }catch(error){const status=error.status||(/community routing limit/i.test(error.message)?429:502);return json({error:error.message||'The route service is unavailable.'},status);}

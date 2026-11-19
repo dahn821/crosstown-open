@@ -17,7 +17,13 @@ struct PreferencesView: View {
                         Text("Citi Bike").tag(BikeSource.citiBike)
                         Text("My own bike").tag(BikeSource.ownBike)
                     }.pickerStyle(.segmented)
-                    if preferences.bikeSource == .citiBike { Toggle("Annual Citi Bike member", isOn: $preferences.citiBikeMember) }
+                    if preferences.bikeSource == .citiBike {
+                        Toggle("Annual Citi Bike member", isOn: $preferences.citiBikeMember)
+                        pace("Classic bike (mph)", value: $preferences.classicBikePaceMph)
+                        pace("Low-assist e-bike (mph)", value: $preferences.lowAssistBikePaceMph)
+                        Text("Enter your average dock-to-dock pace from 4 to 18 mph, or leave it blank for automatic timing.")
+                            .font(.footnote).foregroundStyle(Theme.secondary)
+                    }
                     else { Text("Your bike stays with you on walks and subway rides. Buses are excluded. Check the MTA’s carry rules and avoid crowded trains.").font(.footnote).foregroundStyle(Theme.secondary) }
                 }
                 Section("Open to taking") {
@@ -55,9 +61,18 @@ struct PreferencesView: View {
                 .navigationTitle("Make it mine").navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                    ToolbarItem(placement: .confirmationAction) { Button("Apply") { onApply(preferences); dismiss() }.fontWeight(.semibold) }
+                    ToolbarItem(placement: .confirmationAction) { Button("Apply") { onApply(preferences); dismiss() }.fontWeight(.semibold).disabled(!validPaces) }
                 }
         }.presentationDragIndicator(.visible)
+    }
+    private var validPaces: Bool {
+        [preferences.classicBikePaceMph, preferences.lowAssistBikePaceMph].compactMap { $0 }.allSatisfy { (4...18).contains($0) }
+    }
+    private func pace(_ title: String, value: Binding<Double?>) -> some View {
+        LabeledContent(title) {
+            TextField("Automatic", value: value, format: .number)
+                .keyboardType(.decimalPad).multilineTextAlignment(.trailing).accessibilityLabel(title)
+        }
     }
     private func weight(_ label: String, value: Binding<Double>) -> some View {
         VStack(alignment: .leading) {

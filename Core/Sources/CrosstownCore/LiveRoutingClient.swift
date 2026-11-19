@@ -30,15 +30,19 @@ public actor LiveRoutingClient {
         return try await fetch(URLRequest(url: components.url!), as: Result.self).places
     }
     public func health() async throws -> LiveHealth { try await fetch(URLRequest(url: endpoint("health")), as: LiveHealth.self) }
-    public func vehicles(bounds: [Double], lines: [String] = []) async throws -> VehicleSnapshot {
+    public func vehicles(bounds: [Double], lines: [String] = [], mode: TravelMode? = nil) async throws -> VehicleSnapshot {
         var components = URLComponents(url: endpoint("vehicles"), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "bbox", value: bounds.map { String($0) }.joined(separator: ","))]
         if !lines.isEmpty { components.queryItems?.append(URLQueryItem(name: "lines", value: lines.joined(separator: ","))) }
+        if let mode { components.queryItems?.append(URLQueryItem(name: "modes", value: mode.rawValue)) }
+        if mode == .subway { components.queryItems?.append(URLQueryItem(name: "network", value: "1")) }
         return try await fetch(URLRequest(url: components.url!), as: VehicleSnapshot.self)
     }
-    public func departures(near coordinate: Coordinate) async throws -> TransitDepartures {
+    public func departures(near coordinate: Coordinate, mode: TravelMode? = nil, stop: String? = nil) async throws -> TransitDepartures {
         var components = URLComponents(url: endpoint("transit"), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "lat", value: String(coordinate.latitude)), URLQueryItem(name: "lon", value: String(coordinate.longitude))]
+        if let mode { components.queryItems?.append(URLQueryItem(name: "mode", value: mode.rawValue)) }
+        if let stop { components.queryItems?.append(URLQueryItem(name: "stop", value: stop)) }
         return try await fetch(URLRequest(url: components.url!), as: TransitDepartures.self)
     }
     public func plan(origin: Place, destination: Place, preferences: RoutePreferences, departureOffsetMinutes: Double = 0, departureTime: Date? = nil, arrivalTime: Date? = nil) async throws -> PlanResponse {

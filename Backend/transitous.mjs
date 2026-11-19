@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import {walkingSpeed} from './walking.mjs';
+import {classicCyclingSpeed,rentalLeg} from './citi-bike.mjs';
 
 const endpoint='https://api.transitous.org/api/v6/plan';
 const meters=(a,b)=>Math.hypot((a.latitude-b.latitude)*111200,(a.longitude-b.longitude)*84200);
@@ -38,10 +39,12 @@ export function createTransitousSearch(store,{fetcher=fetch,cache=new Map(),befo
     if(!stop)throw Error('This station is unavailable in the community router.');
     return {latitude:stop.latitude,longitude:stop.longitude};
   };
-  async function plain(origin,destination,modes,preferences,instant,arriveBy=false){
+  async function plain(origin,destination,modes,preferences,instant,arriveBy=false,cyclingSpeed=classicCyclingSpeed){
     const from=point(origin),to=point(destination),transit=modes.transit?.transit?.map(item=>item.mode)||[],asMode=mode=>mode==='BICYCLE'?'BIKE':mode;
     if(meters(from,to)<3)return [{legs:[]}];
-    const parameters={fromPlace:`${from.latitude},${from.longitude}`,toPlace:`${to.latitude},${to.longitude}`,time:new Date(instant).toISOString(),arriveBy:String(arriveBy),pedestrianSpeed:String(walkingSpeed(preferences)),cyclingSpeed:'4.5',transitModes:transit.join(','),directModes:modes.directOnly?modes.direct.map(asMode).join(','):'',preTransitModes:(modes.transit?.access||['WALK']).map(asMode).join(','),postTransitModes:(modes.transit?.egress||['WALK']).map(asMode).join(','),maxTransfers:String(preferences.maxTransfers),minTransferTime:'45',additionalTransferTime:'90',maxPreTransitTime:String(Math.min(900,(modes.transit?.access?.includes('BICYCLE')?preferences.maxBikingMinutes:preferences.maxWalkingMinutes)*60)),maxPostTransitTime:String(Math.min(900,(modes.transit?.egress?.includes('BICYCLE')?preferences.maxBikingMinutes:preferences.maxWalkingMinutes)*60)),maxDirectTime:String((modes.direct?.includes('BICYCLE')?preferences.maxBikingMinutes:preferences.maxWalkingMinutes)*60),numItineraries:'10',maxItineraries:'10',searchWindow:'900',numLegAlternatives:'0'};
+    const hasPersonalPace=preferences.bikeSource==='citiBike'&&(preferences.classicBikePaceMph!=null||preferences.lowAssistBikePaceMph!=null);
+    const bikeLimit=hasPersonalPace?Math.max(preferences.maxBikingMinutes,Math.min(120,preferences.maxBikingMinutes*2)):preferences.maxBikingMinutes;
+    const parameters={fromPlace:`${from.latitude},${from.longitude}`,toPlace:`${to.latitude},${to.longitude}`,time:new Date(instant).toISOString(),arriveBy:String(arriveBy),pedestrianSpeed:String(walkingSpeed(preferences)),cyclingSpeed:String(cyclingSpeed),transitModes:transit.join(','),directModes:modes.directOnly?modes.direct.map(asMode).join(','):'',preTransitModes:(modes.transit?.access||['WALK']).map(asMode).join(','),postTransitModes:(modes.transit?.egress||['WALK']).map(asMode).join(','),maxTransfers:String(preferences.maxTransfers),minTransferTime:'45',additionalTransferTime:'90',maxPreTransitTime:String(Math.min(900,(modes.transit?.access?.includes('BICYCLE')?preferences.maxBikingMinutes:preferences.maxWalkingMinutes)*60)),maxPostTransitTime:String(Math.min(900,(modes.transit?.egress?.includes('BICYCLE')?preferences.maxBikingMinutes:preferences.maxWalkingMinutes)*60)),maxDirectTime:String((modes.direct?.includes('BICYCLE')?bikeLimit:preferences.maxWalkingMinutes)*60),numItineraries:'10',maxItineraries:'10',searchWindow:'900',numLegAlternatives:'0'};
     if(transit.length&&preferences.bikeSource==='ownBike'&&modes.transit.access.includes('BICYCLE'))parameters.requireBikeTransport='true';
     const cacheParameters={...parameters,time:leaveNow?'current-topology':parameters.time},key=crypto.createHash('sha256').update(JSON.stringify(cacheParameters)).digest('hex'),cached=await cache.get(key);
     if(cached&&cached.until>now()){metrics.cacheHits++;return cached.routes;}
@@ -75,10 +78,10 @@ export function createTransitousSearch(store,{fetcher=fetch,cache=new Map(),befo
     const results=await Promise.all(pairs.map(async({pick,drop})=>{
       const [access,ride,egress]=await Promise.all([plain(origin,input(pick),{direct:['WALK'],directOnly:true},preferences,instant),plain(input(pick),input(drop),{direct:['BICYCLE'],directOnly:true},preferences,instant),plain(input(drop),destination,{direct:['WALK'],directOnly:true},preferences,instant)]);
       if(!access[0]||!ride[0]||!egress[0])return null;
-      const bike={mode:'BICYCLE',rentedBike:true,duration:ride[0].legs.reduce((sum,leg)=>sum+leg.duration,0)+120,from:stationPlace(pick),to:stationPlace(drop),coordinates:ride[0].legs.flatMap(leg=>leg.coordinates),steps:ride[0].legs.flatMap(leg=>leg.steps.map(step=>({...step,walkingBike:leg.mode==='WALK'||step.walkingBike})))};
+      const bike=rentalLeg(ride[0].legs,stationPlace(pick),stationPlace(drop),leg=>leg.coordinates);
       return {legs:[...access[0].legs,bike,...egress[0].legs]};
     }));return results.filter(Boolean);
   }
-  const search=async(origin,destination,modes,preferences,instant,arriveBy=false)=>modes.directOnly&&modes.direct.includes('BICYCLE_RENTAL')?rental(origin,destination,preferences,instant):plain(origin,destination,modes,preferences,instant,arriveBy);
+  const search=async(origin,destination,modes,preferences,instant,arriveBy=false,{cyclingSpeed=classicCyclingSpeed}={})=>modes.directOnly&&modes.direct.includes('BICYCLE_RENTAL')?rental(origin,destination,preferences,instant):plain(origin,destination,modes,preferences,instant,arriveBy,cyclingSpeed);
   return {search,metrics};
 }

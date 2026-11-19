@@ -7,17 +7,21 @@ struct JourneyMap: View {
     var origin: Place?
     var destination: Place?
     var apiBaseURLString: String? = nil
-    var showsVehicleControls = false
+    var liveMode: TravelMode? = nil
+    var busStops: [Place] = []
+    var selectedLine = ""
+    var onCenterChange: ((Coordinate) -> Void)? = nil
+    var onStop: ((String, String, Coordinate) -> Void)? = nil
     @State private var snapshot: VehicleSnapshot?
     @State private var vehicleBounds: [Double]?
     @State private var selectedVehicle: LiveVehicle?
-    @State private var busesVisible = true
-    @State private var trainsVisible = true
-    @State private var routeLinesOnly = false
-    @State private var controlsExpanded = false
     @State private var vehicleError: String?
     private var region: MKCoordinateRegion {
         let a = origin?.coordinate ?? Coordinate(40.7505, -73.9934)
+        if liveMode != nil {
+            return MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: a.latitude, longitude: a.longitude),
+                                      span: MKCoordinateSpan(latitudeDelta: 0.024, longitudeDelta: 0.024))
+        }
         let b = destination?.coordinate ?? Coordinate(40.785, -73.9518)
         return MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: (a.latitude + b.latitude) / 2 + 0.008,
             longitude: (a.longitude + b.longitude) / 2), span: MKCoordinateSpan(latitudeDelta: max(0.025, abs(a.latitude - b.latitude) * 1.8), longitudeDelta: max(0.025, abs(a.longitude - b.longitude) * 1.65)))
@@ -27,8 +31,8 @@ struct JourneyMap: View {
         let r = region
         return [r.center.longitude - r.span.longitudeDelta / 2, r.center.latitude - r.span.latitudeDelta / 2, r.center.longitude + r.span.longitudeDelta / 2, r.center.latitude + r.span.latitudeDelta / 2]
     }
-    private var routeLines: [String] { routeLinesOnly ? Array(Set(route?.legs.compactMap(\.line) ?? [])).sorted() : [] }
-    private var queryID: String { (apiBaseURLString ?? "") + queryBounds.map { String($0) }.joined(separator: ",") + routeLines.joined(separator: ",") }
+    private var routeLines: [String] { selectedLine.isEmpty ? [] : [selectedLine] }
+    private var queryID: String { (apiBaseURLString ?? "") + (liveMode?.rawValue ?? "") + queryBounds.map { String($0) }.joined(separator: ",") + routeLines.joined(separator: ",") }
     var body: some View {
         TimelineView(.periodic(from: .now, by: 5)) { context in
         Map(initialPosition: .region(region), interactionModes: [.pan, .zoom]) {
@@ -37,6 +41,27 @@ struct JourneyMap: View {
                     MapPolyline(coordinates: leg.coordinates.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) })
                         .stroke(Theme.mode(leg.mode), style: StrokeStyle(lineWidth: leg.mode == .walk ? 3 : 5, lineCap: .round, dash: leg.mode == .walk ? [3, 6] : []))
                 }
+            }
+            if let network = snapshot?.network, liveMode == .subway {
+                ForEach(Array(network.segments.enumerated()), id: \.offset) { _, segment in
+                    MapPolyline(coordinates: segment.points.compactMap { pair in
+                        pair.count == 2 ? CLLocationCoordinate2D(latitude: pair[0], longitude: pair[1]) : nil
+                    }).stroke(networkColor(segment.color).opacity(0.48), lineWidth: 3)
+                }
+                if queryBounds[2] - queryBounds[0] < 0.11 {
+                    ForEach(network.stations) { station in
+                        Annotation(station.name, coordinate: CLLocationCoordinate2D(latitude: station.coordinate.latitude, longitude: station.coordinate.longitude)) {
+                            stopButton(station.id, station.name, station.coordinate)
+                        }
+                    }.annotationTitles(.hidden)
+                }
+            }
+            if liveMode == .bus {
+                ForEach(busStops) { stop in
+                    Annotation(stop.name, coordinate: CLLocationCoordinate2D(latitude: stop.coordinate.latitude, longitude: stop.coordinate.longitude)) {
+                        stopButton(stop.id, stop.name, stop.coordinate)
+                    }
+                }.annotationTitles(.hidden)
             }
             if let origin {
                 Annotation("Start", coordinate: CLLocationCoordinate2D(latitude: origin.coordinate.latitude, longitude: origin.coordinate.longitude)) {
@@ -61,8 +86,9 @@ struct JourneyMap: View {
                 let r = change.region
                 let next = [r.center.longitude - r.span.longitudeDelta / 2, r.center.latitude - r.span.latitudeDelta / 2, r.center.longitude + r.span.longitudeDelta / 2, r.center.latitude + r.span.latitudeDelta / 2].map { ($0 * 10000).rounded() / 10000 }
                 if next != vehicleBounds { vehicleBounds = next }
+                onCenterChange?(Coordinate((r.center.latitude * 1000).rounded() / 1000, (r.center.longitude * 1000).rounded() / 1000))
             }
-            .overlay(alignment: .topTrailing) { if showsVehicleControls { vehicleControls(now: context.date) } }
+            .overlay(alignment: .topTrailing) { if let liveMode { liveCaption(liveMode, now: context.date) } }
             .accessibilityLabel("Map with bus GPS locations, station-based train estimates, and the selected route. Tap a vehicle for its source and report time.")
         }
         .task(id: queryID) {
@@ -70,7 +96,7 @@ struct JourneyMap: View {
             do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
             while !Task.isCancelled {
                 do {
-                    let result = try await LiveRoutingClient(baseURL: url).vehicles(bounds: queryBounds, lines: routeLines)
+                    let result = try await LiveRoutingClient(baseURL: url).vehicles(bounds: queryBounds, lines: routeLines, mode: liveMode)
                     guard !Task.isCancelled else { return }
                     snapshot = result; vehicleError = nil
                 } catch {
@@ -87,34 +113,25 @@ struct JourneyMap: View {
     }
     private func visibleVehicles(at now: Date) -> [LiveVehicle] {
         (snapshot?.vehicles ?? []).filter { v in
-            now.timeIntervalSince(v.reportedDate) <= 90 && (v.mode == .bus ? busesVisible : trainsVisible)
+            now.timeIntervalSince(v.reportedDate) <= 90 && (liveMode == nil || v.mode == liveMode)
         }
     }
-    private func vehicleControls(now: Date) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack {
-                Button { controlsExpanded.toggle() } label: { Label("Layers", systemImage: "slider.horizontal.3").font(.caption.weight(.semibold)) }
-                    .accessibilityLabel("Vehicle map layers")
-                Spacer()
-                Text("\(visibleVehicles(at: now).count) vehicles").font(.caption2).foregroundStyle(Theme.secondary)
-            }
-            if controlsExpanded {
-            Toggle("Bus GPS", isOn: $busesVisible)
-            Toggle("Train station estimates", isOn: $trainsVisible)
-            if !(route?.legs.compactMap(\.line).isEmpty ?? true) { Toggle("Selected route lines", isOn: $routeLinesOnly) }
-            Text("\(visibleVehicles(at: now).count) vehicles · refreshes every 15s").font(.caption2).foregroundStyle(Theme.secondary)
-            Text("Trains are placed at their reported or next station. Exact positions between stations are unavailable.")
-                .font(.caption2).foregroundStyle(Theme.secondary)
-            if snapshot?.feedStatus.busVehicles?.configured == false { Text("Bus GPS needs a Bus Time key in Sources.").font(.caption2).foregroundStyle(.orange) }
-            else if snapshot?.feedStatus.busVehicles?.stale == true { Text("Bus GPS reports are unavailable or stale.").font(.caption2).foregroundStyle(.orange) }
-            if snapshot?.truncated == true { Text("Zoom in to see more vehicles.").font(.caption2).foregroundStyle(Theme.secondary) }
-            if let vehicleError { Text(vehicleError).font(.caption2).foregroundStyle(.orange) }
-            } else {
-                Text("Bus GPS · train station estimates").font(.caption2).foregroundStyle(Theme.secondary)
-                if let vehicleError { Text(vehicleError).font(.caption2).foregroundStyle(.orange) }
-            }
-        }.font(.caption).toggleStyle(.switch).padding(14).frame(width: controlsExpanded ? 235 : 220)
-            .background(.regularMaterial, in: .rect(cornerRadius: 16)).padding(12)
+    private func networkColor(_ color: String?) -> Color {
+        color.flatMap { UInt($0, radix: 16) }.map { Color(hex: $0) } ?? Theme.green
+    }
+    private func stopButton(_ id: String, _ name: String, _ coordinate: Coordinate) -> some View {
+        Button { onStop?(id, name, coordinate) } label: {
+            Circle().fill(.white)
+                .overlay { Circle().strokeBorder(Theme.mode(liveMode ?? .subway), lineWidth: 2) }
+                .frame(width: 12, height: 12).padding(5)
+        }.buttonStyle(.plain).accessibilityLabel("Show arrivals at \(name)")
+    }
+    private func liveCaption(_ mode: TravelMode, now: Date) -> some View {
+        let count = visibleVehicles(at: now).count
+        let label = mode == .bus ? "\(count) buses with GPS" : "\(count) train station estimates"
+        let note = vehicleError ?? (mode == .bus && snapshot?.feedStatus.busVehicles?.stale == true ? "Bus GPS unavailable" : label)
+        return Text(note).font(.caption2.weight(.semibold)).foregroundStyle(Theme.ink)
+            .padding(9).background(.regularMaterial, in: Capsule()).padding(9)
     }
 }
 
@@ -159,21 +176,6 @@ private struct VehicleReportView: View {
             }.padding(24).navigationTitle("Vehicle report").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }.presentationDetents([.medium]).presentationDragIndicator(.visible)
-    }
-}
-
-struct LiveVehicleMapScreen: View {
-    let apiBaseURLString: String
-    let origin: Place?
-    let destination: Place?
-    let route: Itinerary?
-    @Environment(\.dismiss) private var dismiss
-    var body: some View {
-        NavigationStack {
-            JourneyMap(route: route, origin: origin, destination: destination, apiBaseURLString: apiBaseURLString, showsVehicleControls: true)
-                .navigationTitle("Live vehicles").navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-        }
     }
 }
 

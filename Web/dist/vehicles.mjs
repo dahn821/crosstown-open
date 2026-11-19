@@ -3,14 +3,17 @@ const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;
 const age=v=>Math.max(0,Math.floor(Date.now()/1000-v.reportedAtSeconds));
 const color=v=>/^[0-9a-f]{6}$/i.test(v.routeColor)?'#'+v.routeColor:v.mode==='bus'?'#2d5bff':'#25815f';
 const clock=value=>new Date(value).toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'numeric',minute:'2-digit',second:'2-digit'});
-export function attachVehicleMap({map,L,api,getRoute}){
+export function attachVehicleMap({map,L,api,getRoute,onSnapshot=()=>{}}){
   const layer=L.layerGroup().addTo(map),markers=new Map(),control=document.createElement('section');
   control.className='vehicle-map-control';control.setAttribute('aria-label','Live vehicle map layers');
   control.innerHTML=`<button class="vehicle-layer-title" aria-expanded="false">${icon('activity')} Live vehicles <span>⌄</span></button><div class="vehicle-layer-options" hidden><label><input type="checkbox" name="bus" checked>Bus GPS</label><label><input type="checkbox" name="subway" checked>Train station estimates</label><label><input type="checkbox" name="routeOnly">Selected route lines</label><p>Subway markers are at reported or next stations. Exact positions between stations are unavailable.</p></div><p class="vehicle-map-status" role="status">Checking vehicle reports…</p><button class="vehicle-expand">Expand live map</button>`;
   document.querySelector('#app').append(control);
   const status=control.querySelector('.vehicle-map-status'),options=control.querySelector('.vehicle-layer-options'),title=control.querySelector('.vehicle-layer-title');
-  let controller,requestID=0,moveTimer,snapshot,suspended=false;
-  const modeEnabled=mode=>control.querySelector(`[name="${mode}"]`).checked;
+  let controller,requestID=0,moveTimer,snapshot,suspended=false,view='directions',line='';
+  const modeEnabled=mode=>view==='directions'?control.querySelector(`[name="${mode}"]`).checked:mode===view;
+  function clear(){
+    controller?.abort();requestID++;snapshot=null;layer.clearLayers();markers.clear();
+  }
   function markerIcon(vehicle){
     const gps=vehicle.accuracy==='gps',compact=map.getZoom()<15,heading=vehicle.bearing==null?'':`<span class="vehicle-heading" aria-hidden="true" style="transform:rotate(${Number(vehicle.bearing)}deg)"><svg viewBox="0 0 16 16"><path d="M8 1 14 14 8 11 2 14Z"/></svg></span>`;
     const content=(compact?(vehicle.mode==='bus'?icon('bus'):`<b>${esc(vehicle.line)}</b>`):`${icon(vehicle.mode)}<b>${esc(vehicle.line)}</b>`)+heading;
@@ -40,18 +43,20 @@ export function attachVehicleMap({map,L,api,getRoute}){
     status.textContent=text;
   }
   async function refresh(){
-    if(document.hidden||suspended)return;
+    if(document.hidden||suspended||view==='bike')return;
     const modes=['bus','subway'].filter(modeEnabled);
-    if(!modes.length){controller?.abort();requestID++;snapshot=null;layer.clearLayers();markers.clear();status.textContent='Vehicle layers hidden';return;}
+    if(!modes.length){clear();status.textContent='Vehicle layers hidden';return;}
     const id=++requestID;controller?.abort();controller=new AbortController();
     const b=map.getBounds(),params=new URLSearchParams({bbox:[b.getWest(),b.getSouth(),b.getEast(),b.getNorth()].join(','),modes:modes.join(',')});
     const route=getRoute(),lines=[...new Set(route?.legs.map(l=>l.line).filter(Boolean)||[])];
     const routeOnly=control.querySelector('[name="routeOnly"]');routeOnly.disabled=!lines.length;
-    if(routeOnly.checked&&lines.length)params.set('lines',lines.join(','));
+    if(view==='subway')params.set('network','1');
+    if(view!=='directions'&&line)params.set('lines',line);
+    else if(view==='directions'&&routeOnly.checked&&lines.length)params.set('lines',lines.join(','));
     try{
       const result=await api('/vehicles?'+params,{signal:controller.signal});if(id!==requestID)return;
-      snapshot=result;render();
-    }catch(e){if(id!==requestID||e.name==='AbortError')return;snapshot=null;layer.clearLayers();markers.clear();status.textContent='Vehicle reports unavailable. Refresh the map to try again.';}
+      snapshot=result;render();onSnapshot(view,result);
+    }catch(e){if(id!==requestID||e.name==='AbortError')return;clear();onSnapshot(view,null);status.textContent='Vehicle reports unavailable. Refresh the map to try again.';}
   }
   title.addEventListener('click',()=>{options.hidden=!options.hidden;title.setAttribute('aria-expanded',!options.hidden);});
   control.addEventListener('change',refresh);
@@ -63,10 +68,18 @@ export function attachVehicleMap({map,L,api,getRoute}){
   map.on('moveend',()=>{clearTimeout(moveTimer);moveTimer=setTimeout(refresh,250);});
   document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});
   setInterval(refresh,15000);setInterval(render,5000);refresh();
-  return {refresh,setSuspended(value){
-    if(suspended===value)return;
-    suspended=value;
-    if(value){controller?.abort();requestID++;snapshot=null;layer.clearLayers();markers.clear();}
-    else refresh();
-  }};
+  return {refresh,
+    setView(value){
+      view=value;line='';control.hidden=view!=='directions';
+      document.body.classList.remove('vehicle-explore');control.querySelector('.vehicle-expand').textContent='Expand live map';
+      clear();refresh();
+    },
+    setLine(value){line=value;clear();refresh();},
+    setSuspended(value){
+      if(suspended===value)return;
+      suspended=value;
+      if(value)clear();
+      else refresh();
+    }
+  };
 }

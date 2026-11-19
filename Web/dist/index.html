@@ -1,10 +1,31 @@
 <!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#f5f6f8"><meta name="description" content="NYC directions with live subway predictions, Citi Bike availability, and connections between them."><title>Crosstown · NYC, connected</title>
 <script type="importmap">{"imports":{"leaflet":"./vendor/leaflet/leaflet-src.esm.js","maplibre-gl":"./vendor/maplibre/maplibre-gl.mjs"}}</script><script type="module" async src="location-startup.mjs"></script>
-<link rel="icon" href="icon.svg" type="image/svg+xml"><link rel="manifest" href="manifest.webmanifest"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Crosstown"><link rel="apple-touch-icon" href="app-icon.png"><link rel="stylesheet" href="vendor/leaflet/leaflet.css"><link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css"><link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="mobile.css"><link rel="stylesheet" href="journey.css"></head><body>
-<div id="app"><main id="map" aria-label="New York City street map and selected route"></main>
+<link rel="icon" href="icon.svg" type="image/svg+xml"><link rel="manifest" href="manifest.webmanifest"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Crosstown"><link rel="apple-touch-icon" href="app-icon.png"><link rel="stylesheet" href="vendor/leaflet/leaflet.css"><link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css"><link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="mobile.css"><link rel="stylesheet" href="journey.css"><link rel="stylesheet" href="live-explore.css"></head><body>
+<div id="app" data-main-view="directions"><main id="map" aria-label="New York City street and transit map"></main>
 <header class="topbar"><a class="brand" href="#" aria-label="Crosstown home"><span class="brand-icon">↗</span>crosstown</a><span class="city-label">NEW YORK</span></header>
-<nav class="utilities" aria-label="App tools"><button class="tool" data-action="transit" aria-label="Live trains and buses"><span data-icon="subway"></span><span>Live transit</span></button><button class="tool" data-action="bikes" aria-label="Nearby Citi Bikes"><span data-icon="bike"></span><span>Nearby bikes</span></button><button class="tool square" data-action="saved" aria-label="Saved trips"><span data-icon="bookmark"></span></button><button class="tool square" data-action="sources" aria-label="Live data sources and connection"><span data-icon="activity"></span><i id="source-light"></i></button></nav>
+<nav class="map-tabs" aria-label="Map views">
+  <button data-live-view="directions" aria-pressed="true"><span data-icon="explore"></span>Directions</button>
+  <button data-live-view="subway" aria-pressed="false"><span data-icon="subway"></span>Subway</button>
+  <button data-live-view="bus" aria-pressed="false"><span data-icon="bus"></span>Bus</button>
+  <button data-live-view="bike" aria-pressed="false"><span data-icon="bike"></span>Bike</button>
+</nav>
+<nav class="utilities" aria-label="App tools"><button class="tool square" data-action="saved" aria-label="Saved trips"><span data-icon="bookmark"></span></button><button class="tool square" data-action="sources" aria-label="Live data sources and connection"><span data-icon="activity"></span><i id="source-light"></i></button></nav>
+<section id="live-explore" aria-labelledby="live-title" hidden>
+  <div class="live-header">
+    <button data-live-toggle aria-controls="live-detail" aria-expanded="true"><span class="live-title" id="live-title"></span><small class="live-count"></small></button>
+    <button class="live-icon" data-live-center aria-label="Center live map near me"><span data-icon="locate"></span></button>
+    <button class="live-icon" data-live-refresh aria-label="Refresh live map"><span data-icon="refresh"></span></button>
+  </div>
+  <div class="live-detail" id="live-detail">
+    <div class="live-toolbar">
+      <p class="live-map-report" role="status"></p>
+      <label class="live-filter"><span class="visually-hidden">Filter by line</span><select id="live-line-filter"><option value="">All lines</option></select></label>
+    </div>
+    <div class="live-legend" aria-label="Dock marker legend"><span> Bikes available</span><span> E-bikes only</span><span> No bikes</span></div>
+    <div class="live-board"></div>
+  </div>
+</section>
 <section class="planner" aria-label="Plan your trip"><div class="search-card">
 <button class="place-row" data-place="origin" aria-label="Change start"><span class="origin-dot"></span><span><small>FROM</small><strong id="origin-label">Current location</strong></span><span class="edit-icon" data-icon="search"></span></button><div class="search-divider"></div><button class="swap" data-action="swap" aria-label="Swap start and destination"><span data-icon="swap"></span></button>
 <button class="place-row" data-place="destination" aria-label="Change destination"><span class="destination-dot"></span><span><small>TO</small><strong id="destination-label">Choose a destination</strong></span><span class="edit-icon" data-icon="search"></span></button>

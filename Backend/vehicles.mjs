@@ -25,10 +25,28 @@ export function vehicleQuery(params){
   if(!modes.length||modes.some(m=>!['bus','subway'].includes(m)))throw error('Choose bus or subway map layers.');
   const lines=(params.get('lines')||'').split(',').map(s=>s.trim()).filter(Boolean);
   if(lines.length>40||lines.some(l=>l.length>30||!/^[a-z0-9+ -]+$/i.test(l)))throw error('Choose valid transit lines.');
-  return {bounds,modes,lines};
+  return {bounds,modes,lines,network:params.get('network')==='1'&&modes.includes('subway')};
 }
-export function vehicleSnapshot(store,{bounds=nyc,modes=['bus','subway'],lines=[],now=Date.now()}={}){
-  const vehicles=new Map(),inside=c=>c.longitude>=bounds[0]&&c.longitude<=bounds[2]&&c.latitude>=bounds[1]&&c.latitude<=bounds[3]&&c.longitude>=nyc[0]&&c.longitude<=nyc[2]&&c.latitude>=nyc[1]&&c.latitude<=nyc[3];
+function subwayNetwork(updates,index,lines,bounds,now,segments,stations){
+  const overlaps=(a,b)=>Math.max(a.longitude,b.longitude)>=bounds[0]&&Math.min(a.longitude,b.longitude)<=bounds[2]&&Math.max(a.latitude,b.latitude)>=bounds[1]&&Math.min(a.latitude,b.latitude)<=bounds[3];
+  for(const update of updates.values()){
+    const line=update.trip.routeId;
+    if(!line||(lines.length&&!lines.includes(line))||[3,7].includes(update.trip.scheduleRelationship))continue;
+    const calls=(update.stopTimeUpdate||[]).filter(call=>![1,2].includes(call.scheduleRelationship)&&index.stops?.[call.stopId]);
+    for(const [i,call] of calls.entries()){
+      const at=number((call.arrival||call.departure)?.time)*1000;
+      if(!Number.isFinite(at)||at<now-90000||at>now+90*60000)continue;
+      const from=index.stops[call.stopId],fromID=call.stopId.replace(/[NS]$/,'');
+      if(overlaps(from,from)&&!stations.has(fromID))stations.set(fromID,{id:'nyct:'+fromID,name:from.name,coordinate:from});
+      const next=calls[i+1],to=next&&index.stops[next.stopId];
+      if(!to||!overlaps(from,to))continue;
+      const pair=[fromID,next.stopId.replace(/[NS]$/,'')].sort(),key=line+'|'+pair.join('|');
+      if(!segments.has(key))segments.set(key,{line,color:index.routes?.[line]?.route_color||null,points:[[from.latitude,from.longitude],[to.latitude,to.longitude]]});
+    }
+  }
+}
+export function vehicleSnapshot(store,{bounds=nyc,modes=['bus','subway'],lines=[],now=Date.now(),network=false}={}){
+  const vehicles=new Map(),segments=new Map(),stations=new Map(),inside=c=>c.longitude>=bounds[0]&&c.longitude<=bounds[2]&&c.latitude>=bounds[1]&&c.latitude<=bounds[3]&&c.longitude>=nyc[0]&&c.longitude<=nyc[2]&&c.latitude>=nyc[1]&&c.latitude<=nyc[3];
   for(const [feed,entry] of store.entries){
     const mode=feed==='busVehicles'?'bus':'subway';
     if((feed!=='busVehicles'&&!subwayFeeds.includes(feed))||!modes.includes(mode)||store.freshness(feed).stale||(mode==='bus'&&!store.busKey))continue;
@@ -36,6 +54,7 @@ export function vehicleSnapshot(store,{bounds=nyc,modes=['bus','subway'],lines=[
       const t=e.tripUpdate?.trip;return t?.tripId&&[3,7].includes(t.scheduleRelationship)?[t.tripId+'|'+(t.startDate||'')]:[];
     }));
     const updates=new Map((entry.message?.entity||[]).filter(e=>!e.isDeleted&&e.tripUpdate?.trip).map(e=>[e.tripUpdate.trip.tripId+'|'+(e.tripUpdate.trip.startDate||''),e.tripUpdate]));
+    if(network&&mode==='subway')subwayNetwork(updates,store.tripIndex,lines,bounds,now,segments,stations);
     for(const entity of entry.message?.entity||[]){
       const v=entity.vehicle,trip=v?.trip;
       if(entity.isDeleted||!v||!trip?.routeId||[3,7].includes(trip.scheduleRelationship))continue;
@@ -70,5 +89,5 @@ export function vehicleSnapshot(store,{bounds=nyc,modes=['bus','subway'],lines=[
   const distance=v=>(v.coordinate.latitude-center.latitude)**2+(v.coordinate.longitude-center.longitude)**2;
   const all=[...vehicles.values()].sort((a,b)=>distance(a)-distance(b)),counts=new Map();
   const visible=all.filter(v=>{const n=counts.get(v.mode)||0;counts.set(v.mode,n+1);return n<125;});
-  return {vehicles:visible,generatedAt:new Date(now).toISOString(),feedStatus:store.status(),refreshSeconds:15,maxVehicleAgeSeconds:90,truncated:visible.length<all.length,totalInView:all.length,notice:'Buses show reported GPS positions. Subway markers show reported or next stations, not exact positions between stations.'};
+  return {vehicles:visible,generatedAt:new Date(now).toISOString(),feedStatus:store.status(),refreshSeconds:15,maxVehicleAgeSeconds:90,truncated:visible.length<all.length,totalInView:all.length,...(network?{network:{segments:[...segments.values()],stations:[...stations.values()]}}:{}),notice:'Buses show reported GPS positions. Subway markers show reported or next stations, not exact positions between stations.'};
 }

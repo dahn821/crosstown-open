@@ -3,6 +3,8 @@ import crypto from 'node:crypto';
 import {subwayFeeds} from './feeds.mjs';
 import {walkingPaces,walkingSpeed} from './walking.mjs';
 import {subwayOptions,predictionSnapshot} from './subway-options.mjs';
+import {classicCyclingSpeed,freshBikeStation,lowAssistPickup,lowAssistTrip,rentalDuration} from './citi-bike.mjs';
+import {createSubwayTransferSearch} from './subway-transfers.mjs';
 export const OTP_URL=process.env.OTP_URL||'http://127.0.0.1:9090/otp/gtfs/v1';
 export async function graphql(query,variables={},fetcher=fetch){
   const response=await fetcher(OTP_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query,variables}),signal:AbortSignal.timeout(45000)});
@@ -47,6 +49,7 @@ export function validateRequest(request){
   if(distance(request.origin.coordinate,request.destination.coordinate)<10)throw Object.assign(Error('Choose two different places.'),{status:400});
   const p={...defaults(),...request.preferences};
   if(!Object.hasOwn(walkingPaces,p.walkingPace))throw Object.assign(Error('Choose a valid walking pace.'),{status:400});
+  for(const pace of [p.classicBikePaceMph,p.lowAssistBikePaceMph])if(pace!=null&&(!Number.isFinite(pace)||pace<4||pace>18))throw Object.assign(Error('Bike paces must be between 4 and 18 mph.'),{status:400});
   if(!['fastest','cost','aboveGround','sheltered','custom'].includes(p.priority)||!['citiBike','ownBike'].includes(p.bikeSource)||!Array.isArray(p.modes)||!p.modes.length||p.modes.some(m=>!['walk','bike','subway','bus'].includes(m)))throw Object.assign(Error('Choose at least one travel mode and valid preferences.'),{status:400});
   for(const key of ['maxFareCents','maxWalkingMinutes','maxBikingMinutes','maxTransfers','timeWeight','costWeight','outsideWeight','undergroundWeight'])if(!Number.isFinite(p[key])||p[key]<0)throw Object.assign(Error('Check your budget and travel limits.'),{status:400});
   if(p.maxWalkingMinutes>240||p.maxBikingMinutes>240||p.maxTransfers>5||p.maxFareCents>50000)throw Object.assign(Error('Travel limits are outside the supported range.'),{status:400});
@@ -57,8 +60,8 @@ export function validateRequest(request){
   return {...request,preferences:p,depart,arriveBy};
 }
 
-async function search(origin,destination,modes,p,instant,arriveBy=false){
-  const preferences={street:{walk:{speed:walkingSpeed(p),reluctance:2},bicycle:{speed:4.5,reluctance:1,optimization:{type:'SHORTEST_DURATION'},rental:{allowedNetworks:['citibike']}}},transit:{board:{slack:'PT45S'},transfer:{slack:'PT90S',maximumTransfers:p.maxTransfers}}};
+async function search(origin,destination,modes,p,instant,arriveBy=false,{cyclingSpeed=classicCyclingSpeed}={}){
+  const preferences={street:{walk:{speed:walkingSpeed(p),reluctance:2},bicycle:{speed:cyclingSpeed,reluctance:1,optimization:{type:'SHORTEST_DURATION'},rental:{allowedNetworks:['citibike']}}},transit:{board:{slack:'PT45S'},transfer:{slack:'PT90S',maximumTransfers:p.maxTransfers}}};
   const result=await graphql(query,{origin,destination,modes,preferences,date:{[arriveBy?'latestArrival':'earliestDeparture']:new Date(instant).toISOString()}});
   return result.planConnection.edges.map(e=>e.node);
 }
@@ -76,18 +79,20 @@ function latestStart(raw,request,store){
       const departure=live?.departure??timestamp(l.start),arrival=live?.arrival??timestamp(l.end);
       if((!live&&request.preferences.requireLiveTransit)||!Number.isFinite(departure)||!Number.isFinite(arrival)||arrival>clock||arrival<departure)return null;
       connections.set(i,live);remaining--;clock=departure-(remaining?90000:45000)-(l.extraAccessMinutes||0)*60000;
-    }else clock-=l.duration*1000;
+    }else clock-=(l.rentedBike&&request.preferences.bikeSource==='citiBike'?rentalDuration(l,request.preferences):l.duration)*1000;
   }
   return clock>=request.depart?{start:clock,connections}:null;
 }
 export function normalize(raw,request,store){
   const backwards=request.arriveBy!=null?latestStart(raw,request,store):null;if(request.arriveBy!=null&&!backwards)return null;
   const start=backwards?.start??request.depart;
-  const p=request.preferences,stations=new Map(store.bikeStations().map(s=>[s.id,s])),legs=[];let clock=start,boardings=0,fare=0,allLive=true,transitRides=0;
+  const p=request.preferences,stations=raw.legs.some(l=>l.rentedBike)?new Map(store.bikeStations().map(s=>[s.id,s])):null,legs=[];let clock=start,boardings=0,fare=0,allLive=true,transitRides=0;
   for(let i=0;i<raw.legs.length;i++){
     const l=raw.legs[i],mode=l.mode==='BICYCLE'?'bike':l.mode==='SUBWAY'?'subway':l.mode==='BUS'?'bus':l.mode==='WALK'?'walk':null;
     if(!mode||!p.modes.includes(mode)||(mode==='bus'&&p.bikeSource==='ownBike'))return null;
-    const line=l.route?.shortName;let wait=0,ride=l.duration/60,realtime=false,source='OpenStreetMap travel estimate',departure=clock,arrival=clock+ride*60000,bikePickup,bikeReturn,predictionReportedAt,tripId=l.trip?.gtfsId;
+    const line=l.route?.shortName,lowAssist=l.bikeRideType==='lowAssist';
+    const rideSeconds=mode==='bike'&&l.rentedBike&&p.bikeSource==='citiBike'?rentalDuration(l,p):l.duration;
+    let wait=0,ride=rideSeconds/60,realtime=false,source='OpenStreetMap travel estimate',departure=clock,arrival=clock+rideSeconds*1000,bikePickup,bikeReturn,predictionReportedAt,tripId=l.trip?.gtfsId;
     if(mode==='subway'||mode==='bus'){
       const ready=clock+(boardings>0?90000:45000)+(l.extraAccessMinutes||0)*60000;
       const live=backwards?backwards.connections.get(i):store.connection({line,tripId:l.pinnedTripId,fromStop:placeId(l.from.stop?.gtfsId),toStop:placeId(l.to.stop?.gtfsId),readyAt:ready,kind:mode});
@@ -107,20 +112,22 @@ export function normalize(raw,request,store){
     if(mode==='bike'&&p.bikeSource==='citiBike'){
       if(!l.rentedBike||store.status().bikes.stale)return null;
       bikePickup=stations.get(placeId(l.from.vehicleRentalStation?.stationId));bikeReturn=stations.get(placeId(l.to.vehicleRentalStation?.stationId));
-      if(!bikePickup||!bikeReturn||!bikePickup.isRenting||!bikeReturn.isReturning||!(bikePickup.classicBikes>0)||!(bikeReturn.docks>0)||Date.now()-bikePickup.reportedAt>300000||Date.now()-bikeReturn.reportedAt>300000)return null;
+      if(!freshBikeStation(bikePickup)||!freshBikeStation(bikeReturn)||!bikePickup.isRenting||!bikeReturn.isReturning||!(bikeReturn.docks>0))return null;
+      if(lowAssist?(!p.citiBikeMember||!lowAssistPickup(bikePickup)):!(bikePickup.classicBikes>0))return null;
       fare+=p.citiBikeMember?Math.max(0,Math.ceil(ride-45))*27:499+Math.max(0,Math.ceil(ride-30))*41;
       source='Live Citi Bike availability · estimated street time';
     }
     const from=i===0?request.origin:handoffLabel(l.from,raw.legs[i-1].to);
     const to=i===raw.legs.length-1?request.destination:handoffLabel(l.to,raw.legs[i+1].from);
-    let instruction=mode==='walk'?`Walk to ${to.name}`:mode==='bike'?`Ride ${p.bikeSource==='ownBike'?'your bike':'a classic Citi Bike'} to ${to.name}`:`Take the ${line} ${l.headsign?`toward ${l.headsign}`:`to ${to.name}`}`;
+    const bikeName=p.bikeSource==='ownBike'?'your bike':lowAssist?'a low-assist Citi Bike':'a classic Citi Bike';
+    const instruction=mode==='walk'?`Walk to ${to.name}`:mode==='bike'?`Ride ${bikeName} to ${to.name}`:`Take the ${line} ${l.headsign?`toward ${l.headsign}`:`to ${to.name}`}`;
     const duration=(arrival-clock)/60000;
     const coveredTransfer=mode==='walk'&&l.from.stop?.parentStation?.gtfsId&&l.from.stop.parentStation.gtfsId===l.to.stop?.parentStation?.gtfsId;
     const outdoor=mode==='walk'?(coveredTransfer?0:duration):mode==='bike'?duration:mode==='bus'?wait:wait*(1-isUnderground(l.from.stop?.gtfsId));
     const underground=mode==='subway'?ride*undergroundFraction(l)+wait*isUnderground(l.from.stop?.gtfsId):coveredTransfer?duration:0;
     const coordinates=l.coordinates|| (l.legGeometry?.points?decodePolyline(l.legGeometry.points):[from.coordinate,to.coordinate]);
     const stops = line ? {boardStopId:placeId(l.from.stop?.gtfsId),alightStopId:placeId(l.to.stop?.gtfsId)} : {};
-    legs.push({id:String(l.id||i)+'-'+mode,from,to,mode,line,tripId,...stops,duration,waitingMinutes:wait,setupMinutes:mode==='bike'&&l.rentedBike?2:0,outdoorMinutes:outdoor,undergroundMinutes:underground,instruction,coordinates,bikeSource:mode==='bike'?p.bikeSource:undefined,realtime,dataSource:source,predictionReportedAt,departureTime:new Date(departure).toISOString(),arrivalTime:new Date(arrival).toISOString(),routeColor:l.route?.color||null,bikePickup,bikeReturn,steps:l.steps||[]});
+    legs.push({id:String(l.id||i)+'-'+mode,from,to,mode,line,tripId,...stops,duration,waitingMinutes:wait,setupMinutes:mode==='bike'&&l.rentedBike?2:0,outdoorMinutes:outdoor,undergroundMinutes:underground,instruction,coordinates,bikeSource:mode==='bike'?p.bikeSource:undefined,bikeRideType:l.bikeRideType,realtime,dataSource:source,predictionReportedAt,departureTime:new Date(departure).toISOString(),arrivalTime:new Date(arrival).toISOString(),routeColor:l.route?.color||null,bikePickup,bikeReturn,steps:l.steps||[]});
     clock=arrival;
   }
   const sum=(key,filter=()=>true)=>legs.filter(filter).reduce((v,l)=>v+l[key],0);
@@ -128,7 +135,14 @@ export function normalize(raw,request,store){
   if(fare>p.maxFareCents||walkingMinutes>p.maxWalkingMinutes||bikingMinutes>p.maxBikingMinutes||Math.max(0,boardings-1)>p.maxTransfers||(request.arriveBy!=null&&(clock>request.arriveBy||clock<request.arriveBy-90*60000)))return null;
   const liveTransitSummary=legs.some(l=>l.mode==='bus')?(legs.some(l=>l.mode==='subway')?'Live train & bus predictions':'Live bus predictions'):'Live train predictions';
   const routeKey=legs.map(l=>`${l.mode}:${l.line||''}:${l.from.id}:${l.to.id}`).join('|')+p.bikeSource;
-  return {id:crypto.createHash('sha256').update(routeKey).digest('hex').slice(0,20),legs,minutes:(clock-start)/60000,fareCents:fare,outdoorMinutes:sum('outdoorMinutes'),undergroundMinutes:sum('undergroundMinutes'),walkingMinutes,bikingMinutes,transfers:Math.max(0,boardings-1),explanation:'',isSample:false,generatedAt:new Date().toISOString(),arrivalTime:new Date(clock).toISOString(),departureTime:new Date(start).toISOString(),dataQuality:allLive?'live':'scheduled',dataSummary:transitRides?(allLive?liveTransitSummary:'Includes scheduled transit'):bikingMinutes&&p.bikeSource==='citiBike'?'Live bike & dock reports':'Street travel estimate',fareAssumption:p.bikeSource==='ownBike'?'Transit fare estimate':p.citiBikeMember?'Annual member · classic bikes · tax excluded':'Single classic rides · tax excluded'};
+  const minutes=(clock-start)/60000,lowAssist=legs.some(leg=>leg.bikeRideType==='lowAssist');
+  const fareAssumption=lowAssist?'Annual member · low assist if offered · tax excluded':p.bikeSource==='ownBike'?'Transit fare estimate':p.citiBikeMember?'Annual member · classic bikes · tax excluded':'Single classic rides · tax excluded';
+  return {id:crypto.createHash('sha256').update(routeKey+(lowAssist?'|lowAssist':'')).digest('hex').slice(0,20),legs,minutes,fareCents:fare,outdoorMinutes:sum('outdoorMinutes'),undergroundMinutes:sum('undergroundMinutes'),walkingMinutes,bikingMinutes,transfers:Math.max(0,boardings-1),explanation:'',isSample:false,generatedAt:new Date().toISOString(),arrivalTime:new Date(clock).toISOString(),departureTime:new Date(start).toISOString(),dataQuality:allLive?'live':'scheduled',dataSummary:transitRides?(allLive?liveTransitSummary:'Includes scheduled transit'):bikingMinutes&&p.bikeSource==='citiBike'?'Live bike & dock reports':'Street travel estimate',fareAssumption,...(lowAssist?{lowAssistMinutesSaved:raw.classicComparisonSeconds/60-minutes}:{})};
+}
+
+function lowAssistExplanation(saved){
+  const difference=Math.round(Math.abs(saved));
+  return difference?`About ${difference} min ${saved>0?'quicker':'longer'} door to door than the classic bike option. Confirm low assist at unlock.`:'About the same time as a classic bike. Confirm low assist at unlock.';
 }
 
 export function rank(routes,p){
@@ -141,10 +155,10 @@ export function rank(routes,p){
   const signatures=new Set(),result=[];
   const conventional=Math.min(...unique.filter(r=>!r.legs.some(l=>l.mode==='bike')).map(r=>r.minutes));
   for(const r of frontier){
-    const tokens=r.legs.filter(l=>l.mode!=='walk').map(l=>`${l.mode}:${l.line||''}`),sig=tokens.filter((v,i)=>!i||v!==tokens[i-1]).join(',');
+    const tokens=r.legs.filter(l=>l.mode!=='walk').map(l=>`${l.mode}:${l.line||l.bikeRideType||''}`),sig=tokens.filter((v,i)=>!i||v!==tokens[i-1]).join(',');
     if(signatures.has(sig))continue;signatures.add(sig);
     if(r.bikingMinutes&&Number.isFinite(conventional)&&conventional-r.minutes>=1)r.conventionalMinutesSaved=Math.floor(conventional-r.minutes);
-    r.explanation=p.priority==='fastest'?(r.conventionalMinutesSaved?`The bike connection saves about ${r.conventionalMinutesSaved} min compared with the quickest transit-only option found.`:'Earliest arrival among the connections found within your limits.'):p.priority==='cost'?(r.fareCents===0?'Classic-bike ride included with your annual membership.':'Lowest estimated fare, with arrival time used to break ties.'):p.priority==='aboveGround'?(r.undergroundMinutes<1?'Above ground throughout this route.':`About ${Math.ceil(r.undergroundMinutes)} min underground, estimated from MTA station structures.`):p.priority==='sheltered'?`About ${Math.ceil(r.outdoorMinutes)} min outside, including walks, cycling and outdoor waits.`:'Balanced using your custom priorities and hard limits.';
+    r.explanation=Number.isFinite(r.lowAssistMinutesSaved)?lowAssistExplanation(r.lowAssistMinutesSaved):p.priority==='fastest'?(r.conventionalMinutesSaved?`The bike connection saves about ${r.conventionalMinutesSaved} min compared with the quickest transit-only option found.`:'Earliest arrival among the connections found within your limits.'):p.priority==='cost'?(r.fareCents===0?'Classic-bike ride included with your annual membership.':'Lowest estimated fare, with arrival time used to break ties.'):p.priority==='aboveGround'?(r.undergroundMinutes<1?'Above ground throughout this route.':`About ${Math.ceil(r.undergroundMinutes)} min underground, estimated from MTA station structures.`):p.priority==='sheltered'?`About ${Math.ceil(r.outdoorMinutes)} min outside, including walks, cycling and outdoor waits.`:'Balanced using your custom priorities and hard limits.';
     result.push(r);if(result.length===6)break;
   }
   return result;
@@ -161,13 +175,13 @@ async function bikeConnections(request,store,searcher=search,candidateLimit=8,eg
       const line=update.trip.routeId,updates=update.stopTimeUpdate||[];
       for(let i=0;i<updates.length-1;i++){
         const from=stops[updates[i].stopId];if(!from||[1,2].includes(updates[i].scheduleRelationship))continue;const access=distance(request.origin.coordinate,from);
-        if(egressBike?access>Math.min(1400,p.maxWalkingMinutes*60*walkingSpeed(p)):access>Math.min(6000,p.maxBikingMinutes*270)||access<350)continue;
+        if(egressBike?access>Math.min(1400,p.maxWalkingMinutes*60*walkingSpeed(p)):access>Math.min(6000,p.maxBikingMinutes*60*classicCyclingSpeed)||access<350)continue;
         const dep=Number((updates[i].departure?.time||updates[i].arrival?.time||0).toString())*1000;
-        if(dep<request.depart+access/(egressBike?walkingSpeed(p):4.5)*1000+(egressBike?45000:120000)||dep>request.depart+5400000)continue;
+        if(dep<request.depart+access/(egressBike?walkingSpeed(p):classicCyclingSpeed)*1000+(egressBike?45000:120000)||dep>request.depart+5400000)continue;
         for(let j=i+1;j<updates.length;j++){
-          const to=stops[updates[j].stopId];if(!to||[1,2].includes(updates[j].scheduleRelationship))continue;const egress=distance(request.destination.coordinate,to);if(egressBike?egress>Math.min(6000,p.maxBikingMinutes*270)||egress<350:egress>Math.min(1400,p.maxWalkingMinutes*60*walkingSpeed(p)))continue;
+          const to=stops[updates[j].stopId];if(!to||[1,2].includes(updates[j].scheduleRelationship))continue;const egress=distance(request.destination.coordinate,to);if(egressBike?egress>Math.min(6000,p.maxBikingMinutes*60*classicCyclingSpeed)||egress<350:egress>Math.min(1400,p.maxWalkingMinutes*60*walkingSpeed(p)))continue;
           const arr=Number((updates[j].arrival?.time||updates[j].departure?.time||0).toString())*1000;if(arr<dep)continue;
-          const key=line+':'+updates[i].stopId.replace(/[NS]$/,'')+':'+updates[j].stopId.replace(/[NS]$/,''),estimate=arr+egress/(egressBike?4.5:walkingSpeed(p))*1000+(egressBike?120000:0);
+          const key=line+':'+updates[i].stopId.replace(/[NS]$/,'')+':'+updates[j].stopId.replace(/[NS]$/,''),estimate=arr+egress/(egressBike?classicCyclingSpeed:walkingSpeed(p))*1000+(egressBike?120000:0);
           if(!candidates.has(key)||estimate<candidates.get(key).estimate)candidates.set(key,{line,fromId:updates[i].stopId,toId:updates[j].stopId,from,to,updates:updates.slice(i,j+1),trip:update.trip,dep,arr,estimate});
         }
       }
@@ -226,26 +240,65 @@ export function bestRoutes(valid,p){
 }
 
 export function compareModes(valid,p,transitCandidates){
+  const bikes=rank(valid.filter(route=>route.legs.some(leg=>leg.mode==='bike')),p);
+  const lowAssist=valid.find(route=>Number.isFinite(route.lowAssistMinutesSaved));
+  if(lowAssist&&!bikes.some(route=>route.id===lowAssist.id)){
+    bikes.splice(5);
+    bikes.push({...lowAssist,explanation:lowAssistExplanation(lowAssist.lowAssistMinutesSaved)});
+  }
   return {
     subway:rank(transitCandidates?.subway??valid.filter(route=>primaryTransitMode(route)==='subway'),p),
     bus:rank(transitCandidates?.bus??valid.filter(route=>primaryTransitMode(route)==='bus'),p),
-    bike:rank(valid.filter(route=>route.legs.some(leg=>leg.mode==='bike')),p),
+    bike:bikes,
     walk:rank(valid.filter(route=>route.legs.every(leg=>leg.mode==='walk')),p),
   };
 }
 
-export async function route(input,store,{searcher=search,bikeCandidateLimit=8,rentalTransitFamilies=true,egressBikeConnections=false}={}){
+function fasterSubwayTransfers(pairs,request,store){
+  const possible=pairs.filter(pair=>pair.route.transfers<request.preferences.maxTransfers&&pair.route.legs.some(leg=>leg.mode==='subway'&&leg.realtime));
+  if(!possible.length)return [];
+  const search=createSubwayTransferSearch(store,request),memo=new Map(),options=[];
+  for(const pair of possible){
+    const {raw,route}=pair,available=request.preferences.maxTransfers-route.transfers;
+    let boardings=0;
+    for(const [index,leg] of route.legs.entries()){
+      if(leg.mode!=='subway'&&leg.mode!=='bus')continue;
+      const boardingSlack=boardings++?90000:45000;
+      if(leg.mode!=='subway'||!leg.realtime)continue;
+      const start=Date.parse(leg.departureTime)-leg.waitingMinutes*60000,rawLeg=raw.legs[index];
+      const ready=(request.arriveBy!=null?request.depart:start)+boardingSlack+(rawLeg.extraAccessMinutes||0)*60000;
+      const arriveBefore=Date.parse(leg.arrivalTime);
+      const key=[leg.boardStopId,leg.alightStopId,leg.line,ready,arriveBefore,available].join('|');
+      if(!memo.has(key))memo.set(key,search(rawLeg,ready,arriveBefore,available));
+      for(const replacement of memo.get(key)){
+        const variant={legs:[...raw.legs.slice(0,index),{...replacement[0],extraAccessMinutes:rawLeg.extraAccessMinutes},...replacement.slice(1),...raw.legs.slice(index+1)]};
+        const result=normalize(variant,request,store);
+        if(result&&result.minutes+1/60<route.minutes)options.push({raw:variant,route:result});
+      }
+    }
+  }
+  return options;
+}
+
+export async function route(input,store,{searcher=search,bikeCandidateLimit=8,rentalTransitFamilies=true,egressBikeConnections=false,lowAssistPickupLimit=4}={}){
   const request=validateRequest(input),p=request.preferences,families=searchFamilies(p,Boolean(store.busKey)).filter(m=>rentalTransitFamilies||!JSON.stringify(m.transit||{}).includes('BICYCLE_RENTAL'));
   const results=await Promise.allSettled(families.map(m=>searcher(toInput(request.origin),toInput(request.destination),m,p,request.arriveBy??request.depart,request.arriveBy!=null)));
   let raw=results.filter(r=>r.status==='fulfilled').flatMap(r=>r.value);
   const errors=results.filter(r=>r.status==='rejected').map(r=>r.reason.message);
   if(!raw.length&&errors.length===results.length)throw results[0].reason;
+  const lowAssist=lowAssistTrip(raw,request,store,{search:searcher,distance,pickupLimit:lowAssistPickupLimit,
+    geometry:leg=>leg.coordinates||(leg.legGeometry?.points?decodePolyline(leg.legGeometry.points):[coordinate(leg.from),coordinate(leg.to)])})
+    .catch(error=>{errors.push(error.message);return null;});
   const bikeSearches=[bikeConnections(request,store,searcher,bikeCandidateLimit)];
   if(egressBikeConnections)bikeSearches.push(bikeConnections(request,store,searcher,bikeCandidateLimit,true));
   raw.push(...(await Promise.all(bikeSearches)).flat());
-  const snapshot=predictionSnapshot(store),pairs=raw.map(raw=>({raw,route:normalize(raw,request,snapshot)})).filter(pair=>pair.route),valid=pairs.map(pair=>pair.route);
+  const choice=await lowAssist;
+  if(choice)raw.push(choice);
+  const snapshot=predictionSnapshot(store),pairs=raw.map(raw=>({raw,route:normalize(raw,request,snapshot)})).filter(pair=>pair.route);
+  const faster=fasterSubwayTransfers(pairs,request,snapshot);
+  pairs.push(...faster);
   const options=subwayOptions(pairs,request,snapshot,{normalize,rank,primaryTransitMode,geometry:connection=>connection.stopIds.map(id=>tripIndex.stops?.[id]).filter(Boolean).map(stop=>({latitude:stop.latitude,longitude:stop.longitude}))});
   const routes=bestRoutes(options.primaries,p),routeGroups=compareModes(options.primaries,p,options.transitCandidates),used=new Set([...routes,...Object.values(routeGroups).flat()].flatMap(route=>route.alternativeIds||[])),alternativeRoutes=Object.fromEntries(Object.entries(options.alternativeRoutes).filter(([id])=>used.has(id)));
-  if(request.arriveBy!=null&&p.priority==='fastest')for(const r of [...routes,...Object.values(routeGroups).flat()])r.explanation='Shortest travel time among the connections found that meet your arrival deadline and limits.';
-  return {routes,routeGroups,alternativeRoutes,searchBounds:{resultsPerFamily:10,windowMinutes:90,extraBikeConnections:8},notice:'MTA stop predictions and current Citi Bike station reports. Street travel and outdoor exposure are estimates. Availability can change before arrival.',consideredRoutes:raw.length,validRoutes:valid.length,optimality:'best-found-within-bounded-search',timing:{mode:request.arriveBy!=null?'arriveBy':request.departureTime?'departAt':'now',time:new Date(request.arriveBy??request.depart).toISOString()},isSample:false,generatedAt:new Date().toISOString(),feedStatus:store.status(),searchedFamilies:families.length+1,excludedScheduled:p.requireLiveTransit,partialSearch:errors.length>0,warnings:[...(!store.busKey?['Live bus predictions need a Bus Time API key. Bus schedules are only included if you turn off live-only transit.']:[]),...errors.map(()=> 'One route family could not be checked.')].filter((v,i,a)=>a.indexOf(v)===i)};
+  if(request.arriveBy!=null&&p.priority==='fastest')for(const r of [...routes,...Object.values(routeGroups).flat()])if(!Number.isFinite(r.lowAssistMinutesSaved))r.explanation='Shortest travel time among the connections found that meet your arrival deadline and limits.';
+  return {routes,routeGroups,alternativeRoutes,searchBounds:{resultsPerFamily:10,windowMinutes:90,extraBikeConnections:8,lowAssistPickupLimit},notice:'MTA stop predictions and current Citi Bike station reports. Street travel and outdoor exposure are estimates. Availability can change before arrival.',consideredRoutes:raw.length+faster.length,validRoutes:pairs.length,optimality:'best-found-within-bounded-search',timing:{mode:request.arriveBy!=null?'arriveBy':request.departureTime?'departAt':'now',time:new Date(request.arriveBy??request.depart).toISOString()},isSample:false,generatedAt:new Date().toISOString(),feedStatus:store.status(),searchedFamilies:families.length+1,excludedScheduled:p.requireLiveTransit,partialSearch:errors.length>0,warnings:[...(!store.busKey?['Live bus predictions need a Bus Time API key. Bus schedules are only included if you turn off live-only transit.']:[]),...errors.map(()=> 'One route family could not be checked.')].filter((v,i,a)=>a.indexOf(v)===i)};
 }

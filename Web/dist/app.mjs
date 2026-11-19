@@ -1,9 +1,10 @@
 import * as L from 'leaflet';
 import {maplibreGL} from './vendor/maplibre-leaflet/leaflet-maplibre-gl.mjs';
 import {icon} from './icons.mjs';
-import {defaults,labels,routeTitle} from './preferences.mjs';
+import {defaults,labels,routeTitle,bikePaceKeys,bikePaces,linkedBikePaces} from './preferences.mjs';
 import {nyLocalInput,nyTimeToISO,timingPayload,timingLabel} from './timing.mjs';
 import {attachVehicleMap} from './vehicles.mjs';
+import {attachLiveExplore} from './live-explore.mjs';
 import {attachMobileLayout} from './mobile-layout.mjs';
 import {CURRENT_LOCATION_ID,createCurrentLocationLookup} from './current-location.mjs';
 import {deviceLocation} from './location-startup.mjs';
@@ -11,10 +12,12 @@ import {departureOptions,resolveDeparture,canChooseDeparture} from './transit-ch
 import {createLiveNavigation} from './live-navigation.mjs';
 const $=(s,root=document)=>root.querySelector(s),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const mins=n=>Math.ceil(n),money=c=>c===0?'Included':new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(c/100),clock=s=>s?new Date(s).toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'numeric',minute:'2-digit'}):'—';
-const state={origin:null,destination:null,location:{status:'idle'},preferences:defaults(),response:null,selected:0,loading:false,error:null,health:null,places:[],saved:[],modal:null,journey:null,timing:{mode:'now',time:null},travelMode:'all'};
+const state={origin:null,destination:null,location:{status:'idle'},preferences:defaults(),response:null,selected:0,loading:false,error:null,health:null,places:[],saved:[],modal:null,journey:null,timing:{mode:'now',time:null},travelMode:'all',mainView:'directions'};
 const sheet=$('#sheet'),app=$('#app'),preview=$('#journey-preview'),navigationPanel=$('#navigation-controls');
-let searchId=0,searchTimer,placeSearchId=0,toastTimer,map,layers,abort,vehicleMap,mobileLayout,navigationMarkers;
+let searchId=0,searchTimer,placeSearchId=0,toastTimer,map,layers,abort,vehicleMap,liveExplore,mobileLayout,navigationMarkers;
 const departureSelections={};let departureRequestKey="";
+const bikePaceStorage='crosstown.bikePaces.v1';
+try{Object.assign(state.preferences,bikePaces(JSON.parse(localStorage.getItem(bikePaceStorage))));}catch{}
 function lineBadges(leg){
  const choices=leg.mode==='subway'&&leg.lineOptions?.length?leg.lineOptions:[{line:leg.line,routeColor:leg.routeColor}];
  return choices.filter(option=>option.line).map(option=>`<span class="line-badge ${leg.mode==='bus'?'bus':''}" style="background:#${/^[0-9a-f]{6}$/i.test(option.routeColor)?option.routeColor:leg.mode==='bus'?'3678c7':'239a68'};${['FCCC0A','F9B514'].includes(option.routeColor?.toUpperCase())?'color:#171c25':''}">${esc(option.line)}</span>`).join('');
@@ -83,7 +86,8 @@ function initMap(){
  }catch(e){console.warn('Vector map:',e.message);fallback();}
  L.control.zoom({position:'bottomright'}).addTo(map);layers=L.featureGroup().addTo(map);
  navigationMarkers=L.layerGroup().addTo(map);
- vehicleMap=attachVehicleMap({map,L,api,getRoute:()=>state.journey?.route||currentRoutes()[state.selected]});
+ vehicleMap=attachVehicleMap({map,L,api,getRoute:()=>state.journey?.route||currentRoutes()[state.selected],onSnapshot:(view,result)=>liveExplore?.vehicleReport(view,result)});
+ liveExplore=attachLiveExplore({map,L,api,vehicles:vehicleMap,getLocation:()=>state.origin?.coordinate});
  mobileLayout=attachMobileLayout({map,onFit:()=>drawRoute()});
  map.on('dragstart',()=>{
   if(!state.journey?.navigator)return;
@@ -94,6 +98,7 @@ function initMap(){
 function drawRoute(fit=true){
  if(!map)return;
  layers.clearLayers();
+ if(state.mainView!=='directions')return;
  const journey=state.journey,r=journey?.route||currentRoutes()[state.selected],caption=$('#map-caption');
  caption.hidden=!r;
  if(r){
@@ -121,12 +126,24 @@ function openSheet(title,body,footer='',actions=''){if(sheet.open)sheet.close();
 async function choosePlace(endpoint){state.modal={type:'place',endpoint};openSheet(endpoint==='origin'?'Where are you starting?':'Where to?',`<input id="place-query" class="search-input" type="search" placeholder="Search a place, restaurant or address" aria-label="Search NYC places">${endpoint==='origin'?`<button class="place-result" data-action="current-location">${icon('locate')}<span><strong>Use current location</strong><small>Start from your device’s location</small></span></button>`:''}<div id="place-results"><p class="hint">Search NYC restaurants, addresses, landmarks or stations.</p></div>`);$('#place-query').focus();await findPlaces('');}
 async function findPlaces(q){const id=++placeSearchId;try{const d=await api('/places?q='+encodeURIComponent(q));if(id!==placeSearchId||state.modal?.type!=='place')return;state.places=d.places;$('#place-results').innerHTML=d.places.length?d.places.map((p,i)=>`<button class="place-result" data-select-place="${i}">${icon('pin')}<span><strong>${esc(p.name)}</strong><small>${esc(p.neighborhood)}</small></span>${icon('arrow')}</button>`).join(''):'<p class="hint">No matches in NYC. Try a street address or landmark.</p>';}catch(e){if(id===placeSearchId&&$('#place-results'))$('#place-results').innerHTML=`<p class="hint">${esc(e.message)}</p>`;}}
 
-function preferences(draft=state.preferences){
- state.modal={type:'preferences'};const p=draft,range=(title,key,min,max,step,unit='')=>`<div class="range-row"><label for="${key}">${title}<output data-output="${key}">${key==='maxFareCents'?money(p[key]):p[key]+unit}</output></label><input id="${key}" name="${key}" type="range" min="${min}" max="${max}" step="${step}" value="${p[key]}" data-unit="${unit}"></div>`;
- openSheet('Make it mine',`<form id="preferences-form"><section class="field-section"><span class="field-label">Your wheels, today</span><div class="segments"><label><input type="radio" name="bikeSource" value="citiBike" ${p.bikeSource==='citiBike'?'checked':''}>Citi Bike</label><label><input type="radio" name="bikeSource" value="ownBike" ${p.bikeSource==='ownBike'?'checked':''}>My own bike</label></div><label class="toggle-row" id="membership-row"><span>Annual Citi Bike member</span><input name="citiBikeMember" type="checkbox" ${p.citiBikeMember?'checked':''}></label><p class="hint" id="bike-policy"></p></section><section class="field-section"><span class="field-label">Open to taking</span>${['bike','subway','bus'].map(m=>`<label class="toggle-row"><span>${icon(m)}${m==='bike'?'Bike':m==='subway'?'Subway':'Bus'}</span><input type="checkbox" name="mode-${m}" ${p.modes.includes(m)?'checked':''}></label>`).join('')}<label class="toggle-row"><span>Live transit predictions only</span><input type="checkbox" name="requireLiveTransit" ${p.requireLiveTransit?'checked':''}></label><p class="hint">${state.health?.feeds?.bus?.configured?'Bus Time is connected.':'Live bus predictions need a Bus Time API key. Turn off live-only to compare clearly labeled bus schedules.'}</p></section><section class="field-section"><label class="field-label" for="walking-pace">Walking pace</label><select id="walking-pace" name="walkingPace" class="search-input">${[["relaxed","Relaxed · 2.5 mph"],["standard","Standard · 3.0 mph"],["brisk","Brisk · 3.7 mph"]].map(([value,label])=>`<option value="${value}" ${(p.walkingPace||"brisk")===value?"selected":""}>${label}</option>`).join("")}</select><p class="hint">Pace changes walking paths, train connections and arrival estimates. Crossing time is included.</p></section><section class="field-section"><span class="field-label">Hard limits</span>${range('Estimated budget','maxFareCents',0,3000,100)}${range('Walking, total','maxWalkingMinutes',0,90,5,' min')}${range('Biking, total','maxBikingMinutes',0,90,5,' min')}${range('Transit transfers','maxTransfers',0,5,1)}</section><section class="field-section"><label class="toggle-row"><span>Use my own mix</span><input type="checkbox" name="custom" ${p.priority==='custom'?'checked':''}></label><div id="custom-weights" ${p.priority==='custom'?'':'hidden'}>${range('Save time','timeWeight',0,100,5)}${range('Save money','costWeight',0,100,5)}${range('Less time outside','outsideWeight',0,100,5)}${range('Less underground','undergroundWeight',0,100,5)}</div><p class="hint">Higher values give that priority more influence. Outdoor time and fares are estimates; your limits apply to those estimates.</p></section></form>`,`<button class="text-button" data-action="reset-preferences">Reset</button><button class="primary" data-action="apply-preferences">Find my connections ${icon('arrow')}</button>`);bikeFields();
+function preferences(draft=state.preferences,{fromLink=false}={}){
+ state.modal={type:'preferences'};const p=draft,pace=(title,key)=>`<label><span>${title}</span><input type="number" name="${key}" inputmode="decimal" aria-label="${title} in miles per hour" min="4" max="18" step="0.1" placeholder="Auto" value="${esc(p[key]??'')}"><small>mph</small></label>`,range=(title,key,min,max,step,unit='')=>`<div class="range-row"><label for="${key}">${title}<output data-output="${key}">${key==='maxFareCents'?money(p[key]):p[key]+unit}</output></label><input id="${key}" name="${key}" type="range" min="${min}" max="${max}" step="${step}" value="${p[key]}" data-unit="${unit}"></div>`;
+ openSheet('Make it mine',`<form id="preferences-form"><section class="field-section"><span class="field-label">Your wheels, today</span><div class="segments"><label><input type="radio" name="bikeSource" value="citiBike" ${p.bikeSource==='citiBike'?'checked':''}>Citi Bike</label><label><input type="radio" name="bikeSource" value="ownBike" ${p.bikeSource==='ownBike'?'checked':''}>My own bike</label></div><label class="toggle-row" id="membership-row"><span>Annual Citi Bike member</span><input name="citiBikeMember" type="checkbox" ${p.citiBikeMember?'checked':''}></label><p class="hint" id="bike-policy"></p><div id="bike-paces"><div class="bike-pace-fields">${pace('Classic bike','classicBikePaceMph')}${pace('Low assist','lowAssistBikePaceMph')}</div><p class="hint">Use your average dock-to-dock pace, including stops and signals. Leave blank for automatic timing.</p></div></section><section class="field-section"><span class="field-label">Open to taking</span>${['bike','subway','bus'].map(m=>`<label class="toggle-row"><span>${icon(m)}${m==='bike'?'Bike':m==='subway'?'Subway':'Bus'}</span><input type="checkbox" name="mode-${m}" ${p.modes.includes(m)?'checked':''}></label>`).join('')}<label class="toggle-row"><span>Live transit predictions only</span><input type="checkbox" name="requireLiveTransit" ${p.requireLiveTransit?'checked':''}></label><p class="hint">${state.health?.feeds?.bus?.configured?'Bus Time is connected.':'Live bus predictions need a Bus Time API key. Turn off live-only to compare clearly labeled bus schedules.'}</p></section><section class="field-section"><label class="field-label" for="walking-pace">Walking pace</label><select id="walking-pace" name="walkingPace" class="search-input">${[["relaxed","Relaxed · 2.5 mph"],["standard","Standard · 3.0 mph"],["brisk","Brisk · 3.7 mph"]].map(([value,label])=>`<option value="${value}" ${(p.walkingPace||"brisk")===value?"selected":""}>${label}</option>`).join("")}</select><p class="hint">Pace changes walking paths, train connections and arrival estimates. Crossing time is included.</p></section><section class="field-section"><span class="field-label">Hard limits</span>${range('Estimated budget','maxFareCents',0,3000,100)}${range('Walking, total','maxWalkingMinutes',0,90,5,' min')}${range('Biking, total','maxBikingMinutes',0,90,5,' min')}${range('Transit transfers','maxTransfers',0,5,1)}</section><section class="field-section"><label class="toggle-row"><span>Use my own mix</span><input type="checkbox" name="custom" ${p.priority==='custom'?'checked':''}></label><div id="custom-weights" ${p.priority==='custom'?'':'hidden'}>${range('Save time','timeWeight',0,100,5)}${range('Save money','costWeight',0,100,5)}${range('Less time outside','outsideWeight',0,100,5)}${range('Less underground','undergroundWeight',0,100,5)}</div><p class="hint">Higher values give that priority more influence. Outdoor time and fares are estimates; your limits apply to those estimates.</p></section></form>`,`<button class="text-button" data-action="reset-preferences">Reset</button><button class="primary" data-action="apply-preferences">${fromLink?'Save bike paces':'Find my connections'} ${icon('arrow')}</button>`);bikeFields();
 }
-function bikeFields(){const f=$('#preferences-form');if(!f)return;const own=f.elements.bikeSource.value==='ownBike';$('#membership-row').hidden=own;f.elements['mode-bus'].disabled=own;$('#bike-policy').textContent=own?'Your bike stays with you on walks and subway rides. Buses are excluded. Carrying it on station stairs adds effort.':'Classic bikes. Current pickup bikes and return docks are checked.';}
-function applyPreferences(){const f=$('#preferences-form'),d=new FormData(f),p={...state.preferences};for(const k of ['maxFareCents','maxWalkingMinutes','maxBikingMinutes','maxTransfers','timeWeight','costWeight','outsideWeight','undergroundWeight'])p[k]=Number(d.get(k));p.bikeSource=d.get('bikeSource');p.walkingPace=d.get('walkingPace');p.citiBikeMember=f.elements.citiBikeMember.checked;p.requireLiveTransit=f.elements.requireLiveTransit.checked;p.modes=['walk',...['bike','subway','bus'].filter(m=>f.elements['mode-'+m].checked)];p.priority=d.has('custom')?'custom':p.priority==='custom'?'fastest':p.priority;state.preferences=p;sheet.close();state.modal=null;planTrip();}
+function bikeFields(){const f=$('#preferences-form');if(!f)return;const own=f.elements.bikeSource.value==='ownBike';$('#membership-row').hidden=own;$('#bike-paces').hidden=own;for(const key of bikePaceKeys)f.elements[key].disabled=own;f.elements['mode-bus'].disabled=own;$('#bike-policy').textContent=own?'Your bike stays with you on walks and subway rides. Buses are excluded. Carrying it on station stairs adds effort.':'Pickup bikes and return docks are checked. Annual members may see a low-assist e-bike option on long rides.';}
+function applyPreferences(){
+ const f=$('#preferences-form');
+ if(!f.reportValidity())return;
+ const d=new FormData(f),p={...state.preferences};
+ for(const k of ['maxFareCents','maxWalkingMinutes','maxBikingMinutes','maxTransfers','timeWeight','costWeight','outsideWeight','undergroundWeight'])p[k]=Number(d.get(k));
+ p.bikeSource=d.get('bikeSource');p.walkingPace=d.get('walkingPace');p.citiBikeMember=f.elements.citiBikeMember.checked;p.requireLiveTransit=f.elements.requireLiveTransit.checked;
+ p.modes=['walk',...['bike','subway','bus'].filter(m=>f.elements['mode-'+m].checked)];
+ p.priority=d.has('custom')?'custom':p.priority==='custom'?'fastest':p.priority;
+ const paces=bikePaces(Object.fromEntries(bikePaceKeys.map(key=>[key,f.elements[key].value])));
+ try{localStorage.setItem(bikePaceStorage,JSON.stringify(paces));}catch{}
+ state.preferences={...p,...paces};
+ sheet.close();state.modal=null;planTrip();
+}
 function journeyView(mode){
  const isNavigation=mode==='navigation';
  if(mode)app.dataset.journeyView=mode;
@@ -141,7 +158,8 @@ function journeyView(mode){
 function journeyLeg(r,leg,index){
  const ride=leg.mode==='subway'||leg.mode==='bus';
  const predictions=ride?`<p class="${leg.realtime?'live-note':''}">${leg.realtime?'Live prediction':'Scheduled'} · ${clock(leg.departureTime)} to ${clock(leg.arrivalTime)}</p><p>Board at ${esc(leg.from.name)} · ${mins(leg.waitingMinutes)} min wait${leg.predictionReportedAt?` · MTA report ${clock(leg.predictionReportedAt)}`:''}</p>`:'';
- const docks=leg.bikePickup?`<p class="live-note">${leg.bikePickup.classicBikes} classic bikes · ${leg.bikeReturn.docks} return docks when checked</p>`:'';
+ const lowAssist=leg.bikeRideType==='lowAssist';
+ const docks=leg.bikePickup?`<p class="live-note">${lowAssist?`0 classic bikes · ${leg.bikePickup.ebikes} e-bikes`:`${leg.bikePickup.classicBikes} classic bikes`} · ${leg.bikeReturn.docks} return docks when checked</p>${lowAssist?'<p>Choose Low Assist at unlock if Citi Bike offers it. Bike counts can change.</p>':''}`:'';
  const setup=leg.setupMinutes>0?`<p>About ${mins(Math.max(0,leg.duration-leg.setupMinutes))} min riding + ${mins(leg.setupMinutes)} min for pickup and return.</p>`:'';
  const steps=(leg.steps||[]).filter(step=>step.distance>5);
  const directions=steps.length?`<details><summary>Street directions</summary><ol>${steps.map(step=>{
@@ -205,7 +223,6 @@ async function connectBus(){
 }
 document.addEventListener('submit',event=>{if(event.target.id==='bus-setup-form'){event.preventDefault();connectBus();}});
 
-async function bikes(){if(!state.origin){choosePlace('origin');return;}state.modal={type:'bikes'};openSheet('Nearby Citi Bikes','<div class="loading"><i></i><span>Checking station reports…</span></div>');try{const s=await api(`/bikes?lat=${state.origin.coordinate.latitude}&lon=${state.origin.coordinate.longitude}`);if(state.modal?.type!=='bikes')return;openSheet('Nearby Citi Bikes',`<p class="dialog-copy">Near ${esc(state.origin.name)} · report ${clock(s.sourceTimestamp)}<br>Counts can change before you arrive.</p>${s.stale?'<div class="notice">Reports are stale. Refresh before relying on the counts.</div>':''}${s.stations.map(b=>`<article class="bike-station"><div><h4>${esc(b.name)}</h4><small>${Math.round(b.metersAway)} m</small></div><div class="station-counts"><span>${icon('bike')}${b.isRenting?(b.classicBikes??'?')+' classic':'Pickup paused'}</span><span>${icon('dock')}${b.isReturning?b.docks+' docks':'Returns paused'}</span></div>${Date.now()-b.reportedAt>300000?'<p class="hint amber">Station report is stale.</p>':''}<a href="https://maps.apple.com/?ll=${Number(b.coordinate.latitude)},${Number(b.coordinate.longitude)}&q=${encodeURIComponent(b.name)}" target="_blank" rel="noopener">View station in Maps ↗</a></article>`).join('')}`);}catch(e){openSheet('Nearby Citi Bikes',`<div class="empty"><h3>Reports unavailable.</h3><p>${esc(e.message)}</p><button class="primary" data-action="bikes">Try again</button></div>`);}}
 function lookupRide(leg,signal){
  const params=new URLSearchParams({mode:leg.mode,line:leg.line,trip:leg.tripId,from:leg.boardStopId,to:leg.alightStopId,departure:leg.departureTime});
  return api('/ride?'+params,{signal});
@@ -230,7 +247,7 @@ function currentRideTime(update,boarding){
 function navigationCue(update){
  const {phase,leg,fix,offRoute,ride,distanceToTurn}=update;
  if(phase==='arrived')return {icon:'check',title:'You’ve arrived',context:state.destination.name,confirm:'',replan:false};
- if(phase==='pickup')return {icon:'bike',title:`Pick up a Citi Bike at ${leg.bikePickup.name}`,context:'Unlock a bike at the dock.',confirm:'I have the bike',replan:false};
+ if(phase==='pickup')return {icon:'bike',title:`Pick up a Citi Bike at ${leg.bikePickup.name}`,context:leg.bikeRideType==='lowAssist'?'Choose Low Assist in the Citi Bike app if offered.':'Unlock a classic bike at the dock.',confirm:'I have the bike',replan:false};
  if(phase==='return')return {icon:'dock',title:`Return the bike at ${leg.bikeReturn.name}`,context:'Confirm once the bike is locked in.',confirm:'Bike returned',replan:false};
  if(phase==='board'||phase==='ride'){
   const boarding=phase==='board',prediction=currentRideTime(update,boarding);
@@ -368,23 +385,19 @@ async function refreshDetail(){
  if(current)detail(current);
  else{closeJourney();toast('This connection changed. Choose a current route.');}
 }
-const countdown=time=>{const seconds=(Date.parse(time)-Date.now())/1000;return seconds< -30?'Departed':seconds<60?'Due':Math.ceil(seconds/60)+' min';};
-async function transit({quiet=false}={}){
- if(!state.origin){choosePlace('origin');return;}
- state.modal={type:'transit'};
- if(!quiet)openSheet('Live trains and buses','<div class="loading"><i></i><span>Checking MTA predictions…</span></div>');
- try{
-  const board=await api(`/transit?lat=${state.origin.coordinate.latitude}&lon=${state.origin.coordinate.longitude}`);if(state.modal?.type!=='transit')return;
-  const section=mode=>{
-   const rows=board.departures.filter(d=>d.mode===mode).slice(0,24),bus=mode==='bus',fresh=bus?!board.feedStatus.bus.stale:board.feedStatus.subway.some(f=>!f.stale);
-   return `<section class="transit-section"><h3>${bus?'Buses':'Trains'}</h3>${bus&&!board.feedStatus.bus.configured?'<p class="dialog-copy">Live buses are not connected. Add the key from MTA’s email in the private setup field.</p><button class="primary" data-action="bus-setup">Connect Bus Time</button>':rows.length?rows.map(d=>`<article class="transit-departure"><span class="line-badge ${bus?'bus':''}" style="background:#${/^[0-9a-f]{6}$/i.test(d.routeColor)?d.routeColor:bus?'3678c7':'239a68'}">${esc(d.line)}</span><div><strong>${esc(d.stop.name)}</strong><p>${esc(d.direction||'')}${d.direction?' · ':''}${Math.round(d.metersAway)} m from start</p><small data-report-at="${esc(d.predictionReportedAt)}">MTA report ${Math.max(0,Math.floor((Date.now()-Date.parse(d.predictionReportedAt))/1000))}s ago</small></div><div class="transit-countdown"><b data-countdown="${esc(d.departureTime)}">${countdown(d.departureTime)}</b><small>${clock(d.departureTime)}</small></div></article>`).join(''):`<p class="dialog-copy">${fresh?'No upcoming departures reported at nearby stops.':'Current MTA predictions are unavailable. Check Sources or refresh.'}</p>`}</section>`;
-  };
-  const scroll=$('.dialog-body')?.scrollTop||0;
-  openSheet('Live trains and buses',`<p class="dialog-copy">Within 1.2 km of ${esc(state.origin.name)}. Allow time to reach the stop. Refreshes every 30 seconds. Checked ${clock(board.generatedAt)}.</p>${section('subway')}${section('bus')}`,`<button class="text-button" data-action="sources">Sources</button><button class="primary" data-action="transit">Refresh predictions</button>`);
-  if(quiet)$('.dialog-body').scrollTop=scroll;
- }catch(e){if(state.modal?.type==='transit')openSheet('Live trains and buses',`<div class="empty"><h3>Predictions unavailable</h3><p>${esc(e.message)}</p><button class="primary" data-action="transit">Try again</button></div>`);}
+function setMainView(view){
+ if(state.mainView===view||state.journey?.navigator)return;
+ if(state.journey)closeJourney({focus:false});
+ state.mainView=view;app.dataset.mainView=view;
+ for(const b of document.querySelectorAll('[data-live-view]'))b.setAttribute('aria-pressed',String(b.dataset.liveView===view));
+ liveExplore.setView(view);
+ map.invalidateSize();
+ drawRoute(view==='directions');
 }
-document.addEventListener('submit',event=>{if(event.target.id==='timing-form'){event.preventDefault();applyDeparture();}});
+document.addEventListener('submit',event=>{
+ if(event.target.id==='timing-form'){event.preventDefault();applyDeparture();}
+ if(event.target.id==='preferences-form'){event.preventDefault();applyPreferences();}
+});
 document.addEventListener('change',event=>{
  if(event.target.name!=='timeMode')return;
  const form=$('#timing-form'),custom=event.target.value!=='now';$('#custom-time').hidden=!custom;form.elements.time.disabled=!custom;
@@ -394,15 +407,15 @@ document.addEventListener('change',event=>{
 document.addEventListener('click',event=>{
  const b=event.target.closest('button,a.brand');if(!b)return;
  if(b.dataset.departureChoice){const option=state.response?.alternativeRoutes?.[b.dataset.departureChoice];if(!option||!canChooseDeparture(option)){toast('Refresh for current, reachable departures.');return;}departureSelections[option.groupId]=option.choiceId;const selected={...option,id:option.groupId};renderRoutes();detail(selected);toast('Departure selected. Arrival and transfers updated.');return;}
- if(b.dataset.action==='transit'){transit();return;}
+ if(b.dataset.liveView){setMainView(b.dataset.liveView);return;}
  if(b.dataset.action==='refresh-detail'){refreshDetail();return;}
- if(b.matches('.brand')){event.preventDefault();map?.invalidateSize();drawRoute();return;}
+ if(b.matches('.brand')){event.preventDefault();setMainView('directions');return;}
  if(b.dataset.travelMode){state.travelMode=b.dataset.travelMode;state.selected=0;renderRoutes();mobileLayout.showRoutes();drawRoute();return;}
  if(b.dataset.priority){state.preferences.priority=b.dataset.priority;planTrip();return;}
  if(b.dataset.place){choosePlace(b.dataset.place);return;}
  if(b.dataset.selectPlace!=null){const p=state.places[Number(b.dataset.selectPlace)],key=state.modal.endpoint,other=key==='origin'?'destination':'origin';if(key==='origin'){currentLocation.cancel();state.location={status:'idle'};}if(state[other]?.id===p.id)[state.origin,state.destination]=[state.destination,state.origin];else state[key]=p;sheet.close();state.modal=null;planTrip();return;}
  if(b.dataset.route!=null){state.selected=Number(b.dataset.route);renderRoutes();detail(currentRoutes()[state.selected],{focus:true,expand:true});return;}
- if(b.dataset.saved!=null){currentLocation.cancel();state.location={status:'idle'};const s=state.saved[Number(b.dataset.saved)];state.origin=s.origin;state.destination=s.destination;state.preferences={...defaults(),...s.preferences};state.timing={mode:'now',time:null};sheet.close();state.modal=null;if(state.origin.id===CURRENT_LOCATION_ID)useCurrentLocation();else planTrip();return;}
+ if(b.dataset.saved!=null){setMainView('directions');currentLocation.cancel();state.location={status:'idle'};const s=state.saved[Number(b.dataset.saved)];state.origin=s.origin;state.destination=s.destination;state.preferences={...defaults(),...s.preferences,...bikePaces(state.preferences)};state.timing={mode:'now',time:null};sheet.close();state.modal=null;if(state.origin.id===CURRENT_LOCATION_ID)useCurrentLocation();else planTrip();return;}
  if(b.dataset.removeSaved!=null){state.saved.splice(Number(b.dataset.removeSaved),1);try{localStorage.setItem('crosstown.saved.v2',JSON.stringify(state.saved));savedTrips();}catch{toast('Couldn’t update saved trips.');}return;}
  switch(b.dataset.action){
   case'journey-back':closeJourney();break;
@@ -420,7 +433,6 @@ document.addEventListener('click',event=>{
   case'refresh':refreshTrip();break;
   case'swap':currentLocation.cancel();state.location={status:'idle'};[state.origin,state.destination]=[state.destination,state.origin];refreshTrip();break;
   case'fit':drawRoute();break;
-  case'bikes':bikes();break;
   case'sources':sources();break;
   case'bus-setup':busSetup();break;
   case'saved':savedTrips();break;
@@ -433,7 +445,14 @@ document.addEventListener('input',event=>{const x=event.target;if(x.id==='place-
 document.addEventListener('change',event=>{if(event.target.name==='bikeSource')bikeFields();if(event.target.name==='custom')$('#custom-weights').hidden=!event.target.checked;});
 sheet.addEventListener('cancel',()=>{state.modal=null;placeSearchId++;});sheet.addEventListener('click',event=>{if(event.target!==sheet)return;const r=sheet.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom){sheet.close();state.modal=null;placeSearchId++;}});
 hydrate();currentLocation.request();initMap();drawRoute(false);
+function openLinkedBikePaces(){
+ const sharedPaces=linkedBikePaces(location.hash);
+ if(!sharedPaces)return;
+ preferences({...state.preferences,bikeSource:'citiBike',...sharedPaces},{fromLink:true});
+ history.replaceState(history.state,'',location.pathname+location.search);
+}
+openLinkedBikePaces();
+window.addEventListener('hashchange',openLinkedBikePaces);
 try{const [d,health]=await Promise.all([api('/places'),api('/health')]);state.places=d.places;state.health=health;if(health.router.mode==='community')map.attributionControl.addAttribution('<a href="https://transitous.org/sources/" target="_blank" rel="noopener">Transitous</a>');else state.destination??=d.places.find(p=>p.id==='ues')??d.places[1];renderRoutes();if(new URLSearchParams(location.search).get('setup')==='bus-time'&&state.health.localSetupAvailable)busSetup();await planTrip();}catch(e){state.loading=false;state.error=e.message;renderRoutes();}
-setInterval(()=>{updateFreshness();if(document.hidden)return;if(state.modal?.type==='transit')transit({quiet:true});else if(state.health?.router?.ready&&state.health.router.mode!=='community'&&!sheet.open&&!state.journey&&!state.loading&&state.origin)refreshTrip({quiet:true});},30000);
-setInterval(()=>{if(state.modal?.type!=='transit')return;for(const n of document.querySelectorAll('[data-countdown]'))n.textContent=countdown(n.dataset.countdown);for(const n of document.querySelectorAll('[data-report-at]'))n.textContent=`MTA report ${Math.max(0,Math.floor((Date.now()-Date.parse(n.dataset.reportAt))/1000))}s ago`;},1000);
+setInterval(()=>{updateFreshness();if(document.hidden)return;if(state.mainView==='directions'&&state.health?.router?.ready&&state.health.router.mode!=='community'&&!sheet.open&&!state.journey&&!state.loading&&state.origin)refreshTrip({quiet:true});},30000);
 window.addEventListener('resize',()=>{map?.invalidateSize();drawRoute(false);});

@@ -69,7 +69,11 @@ struct RouteDetail: View {
                                         }
                                     }
                                     if let pickup = leg.bikePickup, let dropoff = leg.bikeReturn {
-                                        Text("\(pickup.classicBikes ?? 0) classic bikes at pickup · \(dropoff.docks) return docks now").font(.caption).foregroundStyle(Theme.green)
+                                        let bikes = leg.bikeRideType == "lowAssist" ? "0 classic bikes · \(pickup.ebikes ?? 0) e-bikes" : "\(pickup.classicBikes ?? 0) classic bikes"
+                                        Text("\(bikes) at pickup · \(dropoff.docks) return docks now").font(.caption).foregroundStyle(Theme.green)
+                                        if leg.bikeRideType == "lowAssist" {
+                                            Text("Choose Low Assist in Citi Bike at unlock if offered. Bike counts can change.").font(.caption).foregroundStyle(Theme.secondary)
+                                        }
                                     }
                                     if leg.setupMinutes > 0 { Text("About \(max(0, leg.duration-leg.setupMinutes).minuteText) min riding + \(leg.setupMinutes.minuteText) min for pickup and return.").font(.caption).foregroundStyle(Theme.secondary) }
                                     Text(leg.to.name).font(.caption).foregroundStyle(Theme.secondary)

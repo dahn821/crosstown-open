@@ -59,6 +59,8 @@ public struct RoutePreferences: Codable, Equatable, Sendable {
     public var maxTransfers: Int = 2
     public var citiBikeMember: Bool = true
     public var bikeSource: BikeSource = .citiBike
+    public var classicBikePaceMph: Double? = nil
+    public var lowAssistBikePaceMph: Double? = nil
     public var walkingPace: WalkingPace? = .brisk
     public var timeWeight: Double = 70
     public var costWeight: Double = 25
@@ -101,6 +103,7 @@ public struct RouteLeg: Codable, Identifiable, Sendable {
     public var instruction: String
     public var coordinates: [Coordinate]
     public var bikeSource: BikeSource? = nil
+    public var bikeRideType: String? = nil
     public var realtime: Bool? = nil
     public var dataSource: String? = nil
     public var departureTime: String? = nil
@@ -144,7 +147,12 @@ public struct Itinerary: Codable, Identifiable, Sendable {
         if rides.isEmpty { return "Walk all the way" }
         var names: [String] = []
         for ride in rides {
-            let name = ride.mode == .bike ? (ride.bikeSource == .ownBike ? "My bike" : "Citi Bike") : (ride.lineOptions?.map(\.line).joined(separator: "/") ?? ride.line ?? ride.mode.title)
+            let name: String
+            if ride.mode == .bike {
+                name = ride.bikeSource == .ownBike ? "My bike" : ride.bikeRideType == "lowAssist" ? "Low-assist Citi Bike" : "Citi Bike"
+            } else {
+                name = ride.lineOptions?.map(\.line).joined(separator: "/") ?? ride.line ?? ride.mode.title
+            }
             if names.last != name { names.append(name) }
         }
         return names.joined(separator: " + ")
@@ -187,6 +195,7 @@ public struct LiveBikeCounts: Codable, Sendable {
     public var name: String
     public var bikes: Int
     public var classicBikes: Int?
+    public var ebikes: Int? = nil
     public var docks: Int
     public var isRenting: Bool
     public var isReturning: Bool
@@ -273,4 +282,19 @@ public struct VehicleSnapshot: Codable, Sendable {
     public var truncated: Bool
     public var totalInView: Int
     public var notice: String
+    public var network: TransitNetwork? = nil
+}
+public struct TransitNetwork: Codable, Sendable {
+    public struct Segment: Codable, Sendable {
+        public var line: String
+        public var color: String?
+        public var points: [[Double]]
+    }
+    public struct Station: Codable, Identifiable, Sendable {
+        public var id: String
+        public var name: String
+        public var coordinate: Coordinate
+    }
+    public var segments: [Segment]
+    public var stations: [Station]
 }

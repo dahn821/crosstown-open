@@ -19,6 +19,7 @@ const asNumber=x=>x==null?0:Number(x.toString());
 const epoch=x=>typeof x==='number'?x*1000:typeof x==='string'?Date.parse(x):0;
 // Bus Time adds agency prefixes. GTFS's trailing + means SBS; keep it distinct from local service.
 export const busID=id=>String(id??'').replace(/^(?:MTA(?:[ _](?:NYCT|MTABC|BUS))?|MTABC|NYCT)[_ :]+/i,'').replace(/\+$/,'-SBS').replace(/[^a-z0-9]/gi,'').toUpperCase();
+const bareStopId=id=>String(id).split(':').at(-1);
 export class FeedStore {
   constructor({fetcher=fetch,busKey=process.env.MTA_BUS_TIME_KEY||'',tripIndex=defaultTripIndex}={}){
     this.fetcher=fetcher;this.busKey=busKey;this.tripIndex=tripIndex;this.entries=new Map();this.gbfs=new Map();this.pending=new Map();this.lastBikeError=null;
@@ -110,22 +111,32 @@ export class FeedStore {
     }
     return candidates.sort((a,b)=>Number.isFinite(latestArrival)?b.departure-a.departure||a.arrival-b.arrival:a.arrival-b.arrival);
   }
-  departures(stops,now=Date.now()){
-    const key=(mode,id)=>mode+':'+(mode==='bus'?busID(String(id).split(':').at(-1)):String(id).split(':').at(-1));
-    const nearby=new Map(stops.map(s=>[key(s.vehicleMode==='BUS'?'bus':'subway',s.gtfsId),s])),found=new Map();
+  departures(stops,now=Date.now(),{mode:focusMode,stop:focusStop}={}){
+    const key=(mode,id)=>mode+':'+(mode==='bus'?busID(bareStopId(id)):bareStopId(id));
+    const nearby=new Map(),stopByKey=new Map(),found=new Map();
+    for(const stop of stops){
+      const mode=stop.vehicleMode==='BUS'?'bus':'subway',id=bareStopId(stop.gtfsId);
+      if(focusMode&&mode!==focusMode)continue;
+      stopByKey.set(key(mode,stop.gtfsId),stop);
+      if(focusStop&&(mode==='bus'?busID(id)!==busID(bareStopId(focusStop)):id.replace(/[NS]$/,'')!==bareStopId(focusStop).replace(/[NS]$/,'')))continue;
+      nearby.set(key(mode,stop.gtfsId),stop);
+    }
     for(const [name,entry] of this.entries){
       if((!subwayFeeds.includes(name)&&name!=='bus')||this.freshness(name).stale)continue;
       const mode=name==='bus'?'bus':'subway';if(mode==='bus'&&!this.busKey)continue;
       for(const entity of entry.message?.entity||[]){
         const update=entity.tripUpdate,trip=update?.trip;if(entity.isDeleted||!trip||[3,7].includes(trip.scheduleRelationship))continue;
-        for(const call of update.stopTimeUpdate||[]){
+        const calls=update.stopTimeUpdate||[];
+        for(const [index,call] of calls.entries()){
           if([1,2].includes(call.scheduleRelationship))continue;
           const stop=nearby.get(key(mode,call.stopId)),time=asNumber(call.departure?.time||call.arrival?.time)*1000;
           if(!stop||time<now||time>now+90*60000)continue;
           const route=stop.routes?.find(r=>mode==='bus'?busID(r.shortName)===busID(trip.routeId):r.shortName===trip.routeId);
           const line=route?.shortName||String(trip.routeId||'').replace(/^(?:MTA NYCT|MTABC)_/,'').replace(/\+$/,'-SBS');
           const id=[name,trip.tripId,stop.gtfsId,time].join('|');
-          found.set(id,{id,mode,line,stop:{id:stop.gtfsId,name:stop.name,neighborhood:'New York City',coordinate:{latitude:stop.lat,longitude:stop.lon},selectable:true},metersAway:stop.distance,departureTime:new Date(time).toISOString(),direction:mode==='subway'?String(call.stopId).endsWith('N')?'Northbound':String(call.stopId).endsWith('S')?'Southbound':'':null,routeColor:route?.color||null,predictionReportedAt:new Date(entry.sourceTimestamp).toISOString()});
+          const next=mode==='bus'?stopByKey.get(key(mode,calls[index+1]?.stopId)):null;
+          const direction=mode==='subway'?String(call.stopId).endsWith('N')?'Northbound':String(call.stopId).endsWith('S')?'Southbound':'':next?'Toward '+next.name:null;
+          found.set(id,{id,mode,line,stop:{id:stop.gtfsId,name:stop.name,neighborhood:'New York City',coordinate:{latitude:stop.lat,longitude:stop.lon},selectable:true},metersAway:stop.distance,departureTime:new Date(time).toISOString(),direction,routeColor:route?.color||null,predictionReportedAt:new Date(entry.sourceTimestamp).toISOString()});
         }
       }
     }

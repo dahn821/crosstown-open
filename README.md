@@ -19,6 +19,8 @@ The hosted app sends trip coordinates, timing, and mode settings to [Transitous]
 
 Select a route to highlight it on the map and open its journey outline. **Start navigation** gives on-screen walking and biking directions in the foreground, with prompts to confirm Citi Bike pickup and return and transit boarding and alighting. Crosstown checks the selected live transit trip while you wait or ride. The phone processes navigation fixes in memory. A new search uses your location only when you pick **Find a new route**.
 
+Use the separate **Subway**, **Bus**, and **Bike** map tabs to explore current service. Subway shows live station estimates and active stop patterns. Bus shows live GPS and stop arrivals. Bike maps the Citi Bike dock network with live counts. In directions, annual Citi Bike members may see an eligible low-assist option for a long bike-only ride. Bike pace settings are stored on the device.
+
 The community deployment uses Transitous only for noncommercial, light use under its [API policy](https://transitous.org/api/). For other deployments or commercial use, arrange your own routing provider. Report issues through this repository.
 
 Route requests can contain precise locations. Netlify handles the requests, and Transitous receives the route coordinates. Address searches can go to Photon. The Crosstown server does not write trip history to storage. Saved trips remain on the device. The shared request cap stores request timestamps. Consult [Netlify](https://www.netlify.com/privacy/) and [Transitous](https://transitous.org/privacy/) for their service privacy policies.

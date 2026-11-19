@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {defaults,validateRequest,normalize,rank,decodePolyline,searchFamilies,compareModes,bestRoutes} from '../otp.mjs';
+import {defaults,validateRequest,normalize,rank,decodePolyline,searchFamilies,compareModes,bestRoutes,route} from '../otp.mjs';
 import {FeedStore} from '../feeds.mjs';
 const place=(id,latitude=40.75,longitude=-73.99)=>({id,name:id,neighborhood:'NYC',coordinate:{latitude,longitude},selectable:true});
 const request=p=>({...validateRequest({origin:place('A'),destination:place('B',40.78,-73.95),preferences:p}),depart:Date.now()});
@@ -60,6 +60,98 @@ test('coordinates and hard limits are validated at the API boundary',()=>{
  assert.throws(()=>request({maxFareCents:-1}));assert.throws(()=>request({maxWalkingMinutes:Infinity}));
  assert.throws(()=>validateRequest({origin:place('A',52,0),destination:place('B')}));
  assert.throws(()=>validateRequest({origin:place('A'),destination:place('A')}));
+ assert.throws(()=>request({classicBikePaceMph:3.9}));
+ assert.throws(()=>request({lowAssistBikePaceMph:'10.1'}));
+});
+
+function bikeTripFixture({rideSeconds=1800,shortWalk=180,longWalk=360}={}){
+ const now=Date.now(),origin=place('Origin'),destination=place('Destination',40.79,-73.99);
+ const station=(id,latitude,classicBikes,ebikes)=>({id,name:id,coordinate:{latitude,longitude:-73.99},classicBikes,ebikes,docks:5,reportedAt:now,isRenting:true,isReturning:true});
+ const classic=station('classic',40.7508,4,1),detour=station('detour',40.751,0,3),near=station('near',40.7525,0,2),drop=station('return',40.7892,3,2);
+ const store=new FeedStore({tripIndex:{},busKey:''});
+ store.bikeStations=()=>[classic,detour,near,drop];store.status=()=>({bikes:{stale:false}});
+ const at=(place,station)=>({name:place.name,lat:place.coordinate.latitude,lon:place.coordinate.longitude,...station&&{vehicleRentalStation:{stationId:'citibike:'+place.id}}});
+ const raw={legs:[
+  {mode:'WALK',duration:75,from:at(origin),to:at(classic)},
+  {mode:'BICYCLE',rentedBike:true,duration:rideSeconds,distance:6100,from:at(classic,true),to:at(drop,true)},
+  {mode:'WALK',duration:60,from:at(drop),to:at(destination)}
+ ]};
+ const options=[];
+ const searcher=async(from,to,modes,p,time,arriveBy,street)=>{
+  if(modes.direct.includes('BICYCLE_RENTAL'))return [raw];
+  if(to.label===destination.name)return [];
+  if(modes.direct.includes('WALK')){
+   const station=to.label===near.name?near:detour;
+   return [{legs:[{mode:'WALK',duration:station===near?shortWalk:longWalk,from:at(origin),to:at(station)}]}];
+  }
+  options.push(street);
+  return [{legs:[{mode:'BICYCLE',duration:1420,distance:5600,from:at(near),to:at(drop)}]}];
+ };
+ const plan=preferences=>route({origin,destination,preferences:{modes:['walk','bike'],...preferences}},store,{searcher});
+ return {plan,options,raw,store,origin,destination};
+}
+
+test('long bike-only routes compare the shortest qualifying street walk and total low-assist time',async()=>{
+ const {plan,options}=bikeTripFixture();
+ const r=await plan();
+ const low=r.routeGroups.bike.find(route=>route.legs.some(leg=>leg.bikeRideType==='lowAssist'));
+ assert(low);
+ assert.equal(low.legs.find(leg=>leg.mode==='bike').bikePickup.id,'near');
+ assert.equal(low.walkingMinutes,4);
+ assert(low.minutes<r.routeGroups.bike.find(route=>route.id!==low.id).minutes);
+ assert(Math.abs(options[0].cyclingSpeed-5.4)<1e-9);
+});
+
+test('low assist is only checked past twenty minutes of riding, with membership and a pickup under ten minutes',async()=>{
+ for(const [fixture,prefs] of [[{rideSeconds:1320},{}],[{shortWalk:600,longWalk:600},{}],[{}, {citiBikeMember:false}]]){
+  const {plan,options}=bikeTripFixture(fixture);
+  const r=await plan(prefs);
+  assert(!r.routeGroups.bike.some(route=>route.legs.some(leg=>leg.bikeRideType==='lowAssist')));
+  assert.equal(options.length,0);
+ }
+});
+
+test('a longer door-to-door low-assist option remains available under Bike',async()=>{
+ const {plan}=bikeTripFixture({rideSeconds:1500,shortWalk:400,longWalk:500});
+ const r=await plan();
+ assert.equal(r.routes[0].legs.find(leg=>leg.mode==='bike').bikeRideType,undefined);
+ const alternate=r.routeGroups.bike.find(route=>route.legs.some(leg=>leg.bikeRideType==='lowAssist'));
+ assert.match(alternate.explanation,/longer door to door/);
+});
+
+test('personal bike pace applies to riding distance and remains consistent for arrive-by trips',()=>{
+ const {raw,store,origin,destination}=bikeTripFixture();
+ const start=Date.now(),deadline=start+65*60000;
+ const r=validateRequest({origin,destination,arrivalTime:new Date(deadline).toISOString(),preferences:{classicBikePaceMph:10,modes:['walk','bike']}});
+ const result=normalize(raw,r,store);
+ const seconds=Math.round(6100/(10*0.44704)+120);
+ assert.equal(result.bikingMinutes,seconds/60);
+ assert.equal(Date.parse(result.departureTime),deadline-(seconds+135)*1000);
+ assert.equal(Date.parse(result.arrivalTime),deadline);
+});
+
+test('a live local–express–local connection uses shared platforms and wins only with time to transfer',async()=>{
+ const ids=['startN','hubN','nextN','finishN','hubS'],stops=Object.fromEntries(ids.map((id,i)=>[id,{name:id,latitude:40.74+i*.008,longitude:-73.98}]));
+ const store=new FeedStore({tripIndex:{stops,routes:{}},busKey:''});
+ const now=Math.ceil(Date.now()/1000),update=(tripId,routeId,calls)=>({tripUpdate:{trip:{tripId,routeId},stopTimeUpdate:calls.map(([stopId,seconds])=>({stopId,arrival:{time:now+seconds},departure:{time:now+seconds}}))}});
+ const entity=[
+  update('local','6',[['startN',120],['hubN',300],['nextN',1200],['finishN',1700]]),
+  update('express','4',[['hubN',400],['nextN',660]]),
+  update('otherLocal','6',[['nextN',760],['finishN',920]]),
+  update('missed','5',[['hubN',380],['nextN',470]]),
+  update('differentPlatform','5',[['hubS',400],['nextN',580]])
+ ];
+ store.entries.set('gtfs',{sourceTimestamp:now*1000,message:{entity}});
+ const platform=id=>({name:id,lat:stops[id].latitude,lon:stops[id].longitude,stop:{gtfsId:'nyct:'+id}});
+ const raw={legs:[{mode:'SUBWAY',duration:1580,from:platform('startN'),to:platform('finishN'),route:{shortName:'6'},stopCalls:ids.slice(0,4).map(id=>({stopLocation:{gtfsId:'nyct:'+id}}))}]};
+ const searcher=async(a,b,modes)=>modes.transit?[raw]:[];
+ const plan=maxTransfers=>route({origin:place('A',40.74,-73.98),destination:place('B',40.764,-73.98),preferences:{modes:['subway','walk'],maxTransfers}},store,{searcher});
+ const result=await plan(2);
+ assert.deepEqual(result.routes[0].legs.map(leg=>leg.line),['6','4','6']);
+ assert.equal(result.routes[0].transfers,2);
+ assert.equal(result.routes[0].fareCents,300);
+ assert.equal(Date.parse(result.routes[0].arrivalTime),(now+920)*1000);
+ assert.deepEqual((await plan(1)).routes[0].legs.map(leg=>leg.line),['6']);
 });
 test('live-only never relabels an unreported train as live',()=>{
  const r=request({}),start=r.depart+120000,end=start+600000;

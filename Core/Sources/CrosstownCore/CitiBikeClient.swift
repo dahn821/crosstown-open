@@ -8,6 +8,8 @@ public struct BikeStation: Codable, Identifiable, Sendable {
     public var name: String
     public var coordinate: Coordinate
     public var bikes: Int
+    public var classicBikes: Int? = nil
+    public var ebikes: Int? = nil
     public var docks: Int
     public var isRenting: Bool
     public var isReturning: Bool
@@ -54,6 +56,7 @@ private struct StatusData: Decodable {
     struct Station: Decodable {
         var station_id: String
         var num_bikes_available: Int
+        var num_ebikes_available: Int?
         var num_docks_available: Int
         var is_renting: Flag
         var is_returning: Flag
@@ -77,7 +80,7 @@ public enum BikeFeedParser {
         return (info, status)
     }
 
-    public static func snapshot(information: Data, status: Data, near origin: Coordinate, now: Date = Date()) throws -> BikeSnapshot {
+    public static func snapshot(information: Data, status: Data, near origin: Coordinate? = nil, now: Date = Date()) throws -> BikeSnapshot {
         let decoder = JSONDecoder()
         let info = try decoder.decode(FeedEnvelope<InfoData>.self, from: information)
         let live = try decoder.decode(FeedEnvelope<StatusData>.self, from: status)
@@ -87,14 +90,16 @@ public enum BikeFeedParser {
         let stations: [BikeStation] = info.data.stations.compactMap { station in
             guard let status = statuses[station.station_id], status.is_installed.value else { return nil }
             let coordinate = Coordinate(station.lat, station.lon)
-            let distance = meters(origin, coordinate)
+            let distance = origin.map { meters($0, coordinate) } ?? 0
             guard distance < 5000 else { return nil }
             return BikeStation(id: station.station_id, name: station.name, coordinate: coordinate,
-                bikes: max(0, status.num_bikes_available), docks: max(0, status.num_docks_available),
+                bikes: max(0, status.num_bikes_available),
+                classicBikes: status.num_ebikes_available.map { max(0, status.num_bikes_available - $0) },
+                ebikes: status.num_ebikes_available, docks: max(0, status.num_docks_available),
                 isRenting: status.is_renting.value, isReturning: status.is_returning.value,
                 reportedAt: Date(timeIntervalSince1970: status.last_reported ?? 0), metersAway: distance)
         }.sorted { $0.metersAway < $1.metersAway }
-        return BikeSnapshot(stations: Array(stations.prefix(8)), updatedAt: updatedAt, fetchedAt: now)
+        return BikeSnapshot(stations: origin == nil ? stations : Array(stations.prefix(8)), updatedAt: updatedAt, fetchedAt: now)
     }
 
     private static func meters(_ a: Coordinate, _ b: Coordinate) -> Double {
@@ -114,6 +119,12 @@ public actor CitiBikeClient {
         self.session = URLSession(configuration: configuration)
     }
     public func nearby(_ coordinate: Coordinate) async throws -> BikeSnapshot {
+        try await load(near: coordinate)
+    }
+    public func stations() async throws -> BikeSnapshot {
+        try await load(near: nil)
+    }
+    private func load(near coordinate: Coordinate?) async throws -> BikeSnapshot {
         let discovery = try await fetch(URL(string: "https://gbfs.citibikenyc.com/gbfs/gbfs.json")!)
         let urls = try BikeFeedParser.feedURLs(discovery)
         async let info = fetch(urls.information)

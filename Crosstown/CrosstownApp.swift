@@ -48,6 +48,8 @@ final class AppModel {
     var locationError: String?
     var saved: [SavedJourney] = []
     private let savedKey = "crosstown.saved.live.v2"
+    private let classicPaceKey = "crosstown.bikePace.classic"
+    private let lowAssistPaceKey = "crosstown.bikePace.lowAssist"
     private var latestSearch = UUID()
     private var renderedRequest: PlanRequest?
     private var renderedServer: String?
@@ -57,7 +59,17 @@ final class AppModel {
     init() {
         if let data = UserDefaults.standard.data(forKey: savedKey),
            let items = try? JSONDecoder().decode([SavedJourney].self, from: data) { saved = items }
+        restoreBikePaces()
         locationProvider.warmUp()
+    }
+    private func restoreBikePaces() {
+        request.preferences.classicBikePaceMph = UserDefaults.standard.object(forKey: classicPaceKey) as? Double
+        request.preferences.lowAssistBikePaceMph = UserDefaults.standard.object(forKey: lowAssistPaceKey) as? Double
+    }
+    func applyPreferences(_ preferences: RoutePreferences) {
+        request.preferences = preferences
+        UserDefaults.standard.set(preferences.classicBikePaceMph, forKey: classicPaceKey)
+        UserDefaults.standard.set(preferences.lowAssistBikePaceMph, forKey: lowAssistPaceKey)
     }
     func prepareLocation() { locationProvider.warmUp() }
     var origin: Place? {
@@ -161,6 +173,7 @@ final class AppModel {
     func openSaved(_ journey: SavedJourney) {
         select(journey.origin, endpoint: .origin); select(journey.destination, endpoint: .destination)
         request.preferences = journey.preferences
+        restoreBikePaces()
         request.departureMinute = 0; request.departureTime = nil; request.arrivalTime = nil
         Task { await refresh() }
     }

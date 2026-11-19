@@ -12,7 +12,6 @@ struct ContentView: View {
     @State private var selectedRoute: Itinerary?
     @State private var aboutPresented = false
     @State private var timePresented = false
-    @State private var vehicleMapPresented = false
     @State private var comparisonMode = "all"
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var prefersShelteredTransit: Bool {
@@ -47,17 +46,20 @@ struct ContentView: View {
 
             Group {
                 if tab == 0 { planner }
-                else if tab == 1 { TransitBoard(model: model, onSources: { aboutPresented = true }, onMap: { vehicleMapPresented = true }) }
-                else if tab == 2 { BikeBoard(origin: model.origin, onChooseStart: { editing = .origin }) }
+                else if tab == 1 || tab == 2 {
+                    TransitBoard(model: model, mode: tab == 1 ? .subway : .bus, onSources: { aboutPresented = true }).id(tab)
+                }
+                else if tab == 3 { BikeBoard(origin: model.origin) }
                 else { savedJourneys }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
 
             HStack {
                 tabButton("Explore", symbol: "arrow.triangle.turn.up.right.diamond.fill", index: 0)
-                tabButton("Live transit", symbol: "tram.fill", index: 1)
-                tabButton("Nearby bikes", symbol: "bicycle", index: 2)
-                tabButton("Saved", symbol: "bookmark", index: 3)
-            }.padding(.top, 10).padding(.horizontal, 20).background(.white)
+                tabButton("Subway", symbol: "tram.fill", index: 1)
+                tabButton("Bus", symbol: "bus.fill", index: 2)
+                tabButton("Bike", symbol: "bicycle", index: 3)
+                tabButton("Saved", symbol: "bookmark", index: 4)
+            }.padding(.top, 10).padding(.horizontal, 10).background(.white)
                 .overlay(alignment: .top) { Rectangle().fill(Theme.line).frame(height: 0.5) }
         }
         .background(Theme.canvas).foregroundStyle(Theme.ink)
@@ -74,16 +76,13 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $preferencesPresented) {
-            PreferencesView(preferences: model.request.preferences) { model.request.preferences = $0 }
+            PreferencesView(preferences: model.request.preferences, onApply: model.applyPreferences)
         }
         .sheet(item: $selectedRoute) { route in
             let current = comparedRoutes.first { $0.id == (route.groupId ?? route.id) } ?? model.resolvedRoute(route)
             RouteDetail(route: current, alternatives: model.departureOptions(for: current), onChooseDeparture: model.chooseDeparture, isSaved: model.isCurrentTripSaved, onSave: { model.save(route) }, onRefresh: { await model.refresh() }, apiBaseURLString: model.apiBaseURLString)
         }
         .sheet(isPresented: $aboutPresented) { SourcesView(model: model) }
-        .fullScreenCover(isPresented: $vehicleMapPresented) {
-            LiveVehicleMapScreen(apiBaseURLString: model.apiBaseURLString, origin: model.origin, destination: model.destination, route: model.response?.routes.first)
-        }
         .sheet(isPresented: $timePresented) {
             TripTimePicker(request: model.request) { departure, arrival, includeSchedules in
                 model.request.departureMinute = 0; model.request.departureTime = departure; model.request.arrivalTime = arrival
@@ -118,8 +117,6 @@ struct ContentView: View {
                         Label(model.tripTimeLabel, systemImage: "clock").font(.subheadline.weight(.medium))
                     }.accessibilityLabel("Travel time: \(model.tripTimeLabel). Change departure or arrival time.")
                     Spacer()
-                    Button { vehicleMapPresented = true } label: { Label("Live map", systemImage: "map").font(.caption.weight(.medium)) }
-                        .accessibilityLabel("Open live vehicle map")
                     Button { Task { await model.refresh() } } label: { Image(systemName: "arrow.clockwise").frame(width: 44, height: 44) }
                         .disabled(model.loading || model.locating).accessibilityLabel("Refresh live routes")
                 }

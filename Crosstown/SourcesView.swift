@@ -107,72 +107,102 @@ struct TripTimePicker: View {
 
 struct TransitBoard: View {
     @Bindable var model: AppModel
+    let mode: TravelMode
     let onSources: () -> Void
-    let onMap: () -> Void
     @State private var board: TransitDepartures?
     @State private var error: String?
     @State private var loading = false
+    @State private var center: Coordinate?
+    @State private var focus: Place?
+    @State private var selectedLine = ""
+
+    private var near: Coordinate { focus?.coordinate ?? center ?? model.origin?.coordinate ?? Coordinate(40.7505, -73.9934) }
+    private var arrivals: [TransitDeparture] {
+        board?.departures.filter { $0.mode == mode && (selectedLine.isEmpty || $0.line == selectedLine) } ?? []
+    }
+    private var busStops: [Place] {
+        guard mode == .bus else { return [] }
+        var seen = Set<String>()
+        return arrivals.map(\.stop).filter { seen.insert($0.id).inserted }
+    }
+    private var lines: [String] {
+        Set((board?.departures.map(\.line) ?? []) + [selectedLine]).filter { !$0.isEmpty }.sorted()
+    }
+    private var queryID: String { "\(model.apiBaseURLString)|\(near.latitude),\(near.longitude)|\(focus?.id ?? "")" }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                Text("Live transit").font(.system(size: 30, weight: .semibold)).tracking(-1)
-                Text("Upcoming departures within 1.2 km of \(model.origin?.name ?? "your start"). Allow time to reach the stop. Refreshes every 30 seconds.")
-                    .font(.subheadline).foregroundStyle(Theme.secondary)
-                Button(action: onMap) { Label("Open live vehicle map", systemImage: "map").frame(maxWidth: .infinity).padding(.vertical, 6) }
-                    .buttonStyle(.borderedProminent)
-                HStack {
-                    if let board { Text("Checked \(transitClock(board.generatedAt))").font(.caption).foregroundStyle(Theme.secondary) }
-                    Spacer()
-                    Button { Task { await refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }.disabled(loading)
+        VStack(spacing: 0) {
+            JourneyMap(route: nil, origin: model.origin, destination: nil, apiBaseURLString: model.apiBaseURLString,
+                       liveMode: mode, busStops: busStops, selectedLine: selectedLine, onCenterChange: { center = $0 },
+                       onStop: { id, name, coordinate in focus = Place(id: id, name: name, neighborhood: "New York City", coordinate: coordinate) })
+                .frame(minHeight: 230, maxHeight: .infinity)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    Text(focus?.name ?? (mode == .bus ? "Bus arrivals" : "Subway arrivals"))
+                        .font(.headline).lineLimit(1).accessibilityAddTraits(.isHeader)
+                    Spacer(minLength: 5)
+                    Picker("Line", selection: $selectedLine) {
+                        Text("All lines").tag("")
+                        ForEach(lines, id: \.self) { Text($0).tag($0) }
+                    }.pickerStyle(.menu).labelsHidden().accessibilityLabel("Filter by line")
+                    Button { Task { await refresh() } } label: { Image(systemName: "arrow.clockwise").frame(width: 38, height: 38) }
+                        .disabled(loading).accessibilityLabel("Refresh arrivals")
                 }
-                if loading && board == nil { ProgressView("Checking MTA predictions…") }
-                if let error {
-                    Text(error).font(.subheadline).foregroundStyle(Theme.secondary)
-                    Button("Check Sources", action: onSources)
+                if focus != nil {
+                    Button("‹ Nearby stops") { focus = nil }.font(.subheadline)
+                } else {
+                    Text("Near the center of the map").font(.caption).foregroundStyle(Theme.secondary)
                 }
-                if let board {
-                    departureSection(.subway, board: board)
-                    departureSection(.bus, board: board)
-                }
-            }.padding(24)
+            }.padding(.horizontal, 18).padding(.vertical, 7).frame(maxWidth: .infinity, alignment: .leading).background(.white)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    if loading && board == nil { ProgressView("Checking MTA predictions…") }
+                    if let error {
+                        Text(error).font(.subheadline).foregroundStyle(Theme.secondary)
+                        Button("Check Sources", action: onSources)
+                    }
+                    if let board { departureSection(board: board) }
+                }.padding(.horizontal, 17).padding(.vertical, 8)
+            }.frame(height: 210).refreshable { await refresh() }
         }
-        .refreshable { await refresh() }
-        .task(id: model.apiBaseURLString + "|" + (model.origin?.id ?? "")) {
+        .task(id: queryID) {
+            board = nil
+            do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
             while !Task.isCancelled {
                 await refresh()
                 do { try await Task.sleep(for: .seconds(30)) } catch { return }
             }
         }
     }
-    private func departureSection(_ mode: TravelMode, board: TransitDepartures) -> some View {
-        let rows = Array(board.departures.filter { $0.mode == mode }.prefix(24))
+    private func departureSection(board: TransitDepartures) -> some View {
         return VStack(alignment: .leading, spacing: 12) {
-            Label(mode == .subway ? "Trains" : "Buses", systemImage: mode.symbol).font(.title3.weight(.semibold))
             if mode == .bus && board.feedStatus.bus.configured != true {
-                Text("Live buses are not connected. Add your MTA Bus Time key in the private web setup on your Mac.").font(.subheadline).foregroundStyle(Theme.secondary)
-                Button("Connect Bus Time", action: onSources)
-            } else if rows.isEmpty {
-                Text((mode == .bus ? board.feedStatus.bus.stale : board.feedStatus.subway.allSatisfy(\.stale)) ? "Current MTA predictions are unavailable. Check Sources or refresh." : "No upcoming departures reported at nearby stops.")
+                Text("Bus Time needs a connection.").font(.subheadline).foregroundStyle(Theme.secondary)
+                Button("Open Sources", action: onSources)
+            } else if arrivals.isEmpty {
+                Text((mode == .bus ? board.feedStatus.bus.stale : board.feedStatus.subway.allSatisfy(\.stale)) ? "Current MTA predictions are unavailable." : "No upcoming departures reported here.")
                     .font(.subheadline).foregroundStyle(Theme.secondary)
             } else {
-                ForEach(rows) { departure in
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        departureRow(departure, now: context.date)
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    LazyVStack(spacing: 0) {
+                        ForEach(arrivals.prefix(24)) { departure in
+                            Button { focus = departure.stop } label: { departureRow(departure, now: context.date) }
+                                .buttonStyle(.plain)
+                        }
                     }
                 }
             }
-        }.padding(18).frame(maxWidth: .infinity, alignment: .leading).background(.white, in: .rect(cornerRadius: 20))
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
     private func departureRow(_ departure: TransitDeparture, now: Date) -> some View {
         let seconds = (transitDate(departure.departureTime) ?? now).timeIntervalSince(now)
         let age = max(0, Int(now.timeIntervalSince(transitDate(departure.predictionReportedAt) ?? now)))
         return HStack(alignment: .top, spacing: 12) {
             Text(departure.line).font(.caption.bold()).foregroundStyle(.white).padding(8)
-                .background(Theme.mode(departure.mode), in: .rect(cornerRadius: 10))
+                .background(departure.routeColor.flatMap { UInt($0, radix: 16) }.map { Color(hex: $0) } ?? Theme.mode(departure.mode), in: .rect(cornerRadius: 10))
             VStack(alignment: .leading, spacing: 5) {
                 Text(departure.stop.name).font(.subheadline.weight(.semibold))
-                Text([departure.direction, "\(Int(departure.metersAway)) m from start"].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
+                Text(departure.direction ?? "Live MTA prediction")
                     .font(.caption).foregroundStyle(Theme.secondary)
                 Text("MTA report \(age)s ago").font(.caption2).foregroundStyle(Theme.secondary)
             }
@@ -184,15 +214,15 @@ struct TransitBoard: View {
         }.padding(.vertical, 8)
     }
     private func refresh() async {
-        guard let origin = model.origin, let url = URL(string: model.apiBaseURLString) else { return }
-        let server = model.apiBaseURLString
+        guard let url = URL(string: model.apiBaseURLString) else { return }
+        let key = queryID, coordinate = near, stop = focus?.id
         loading = true
         do {
-            let result = try await LiveRoutingClient(baseURL: url).departures(near: origin.coordinate)
-            guard !Task.isCancelled, server == model.apiBaseURLString, origin.id == model.origin?.id else { return }
+            let result = try await LiveRoutingClient(baseURL: url).departures(near: coordinate, mode: mode, stop: stop)
+            guard !Task.isCancelled, key == queryID else { return }
             board = result; error = nil
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, key == queryID else { return }
             board = nil; self.error = error.localizedDescription
         }
         loading = false
