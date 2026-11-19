@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {FeedStore,canonicalTripId,busID} from '../feeds.mjs';
 import {nearbySubwayBoard} from '../subway-stations.mjs';
+import {nearbyBusBoard} from '../bus-stops.mjs';
 
 test('real GTFS SBS plus suffixes and Bus Company prefixes preserve route identity',()=>{
  for(const [provider,display]of [['MTA NYCT_M15+','M15-SBS'],['MTA NYCT_M34A+','M34A-SBS'],['MTABC_Q52+','Q52-SBS'],['MTA_403058','403058']])assert.equal(busID(provider),busID(display));
@@ -91,4 +92,39 @@ test('subway exploration ranks the nearest station complexes before considering 
  assert.deepEqual(nearbySubwayBoard(store,center,{line:'7'},now).stations.map(station=>station.name),['Grand Central','Fifth']);
  assert.equal(nearbySubwayBoard(store,center,{stop:'nyct:C2'},now).departures.length,3);
  assert.equal(nearbySubwayBoard(store,{latitude:40.7549,longitude:-73.98},{},now).stations[0].name,'Fifth');
+});
+test('bus exploration ranks physical stops and filters by live service without merging SBS and local',()=>{
+ const now=Date.now(),center={latitude:40.75,longitude:-73.98};
+ const busStops=Array.from({length:6},(_,i)=>({gtfsId:'mta:'+String(i+20),name:`E ${i+32} ST/PARK AV`,lat:40.75+i*.001,lon:-73.98}));
+ const store=new FeedStore({tripIndex:{},busStops,busKey:'test-only'});
+ const entity=[['M15+',20,300,21],['M15',20,180,21],['M15+',25,60,24]].map(([line,stopId,delay,next],index)=>({
+   tripUpdate:{trip:{routeId:'MTA NYCT_'+line,tripId:'trip-'+index},stopTimeUpdate:[{stopId:'MTA_'+stopId,departure:{time:Math.floor(now/1000)+delay}},{stopId:'MTA_'+next,departure:{time:Math.floor(now/1000)+delay+30},scheduleRelationship:1},{stopId:'MTA_'+next,departure:{time:Math.floor(now/1000)+delay+60}}]}
+ }));
+ store.entries.set('bus',{sourceTimestamp:now,message:{entity}});
+ const near=nearbyBusBoard(store,busStops,center,{},now);
+ assert.deepEqual(near.stations.map(stop=>stop.id),['mta:20','mta:21','mta:22','mta:23']);
+ assert.equal(near.stations[0].name,'E 32 St / Park Av');
+ assert.equal(near.departures.find(item=>item.stop.id==='mta:20').direction,'Toward E 33 St / Park Av');
+ const local=nearbyBusBoard(store,busStops,center,{line:'M15'},now),sbs=nearbyBusBoard(store,busStops,center,{line:'M15-SBS'},now);
+ assert.deepEqual(local.stations.map(stop=>stop.id),['mta:20','mta:21']);
+ assert.deepEqual(sbs.stations.map(stop=>stop.id),['mta:20','mta:21','mta:24','mta:25']);
+ assert.equal(nearbyBusBoard(store,busStops,center,{stop:'MTA_25'},now).stations[0].id,'mta:25');
+});
+
+test('opposite curbs at one bus intersection share a board and retain their boarding stop IDs',()=>{
+ const now=Date.now(),center={latitude:40.75,longitude:-73.98};
+ const busStops=[
+   {gtfsId:'mta:1',name:'E 34 ST/1 AV',lat:40.7501,lon:-73.98},
+   {gtfsId:'mta:2',name:'1 AV/E 34 ST',lat:40.7505,lon:-73.98},
+   {gtfsId:'mta:3',name:'E 35 ST/1 AV',lat:40.751,lon:-73.98},
+   {gtfsId:'mta:4',name:'E 34 ST/1 AV',lat:40.753,lon:-73.98}
+ ];
+ const store=new FeedStore({tripIndex:{},busStops,busKey:'test-only'});
+ const entity=[1,2].map(stopId=>({tripUpdate:{trip:{routeId:'MTA NYCT_M34+',tripId:'trip-'+stopId},
+   stopTimeUpdate:[{stopId:'MTA_'+stopId,departure:{time:Math.floor(now/1000)+120*stopId}}]}}));
+ store.entries.set('bus',{sourceTimestamp:now,message:{entity}});
+ const board=nearbyBusBoard(store,busStops,center,{},now);
+ assert.deepEqual(board.stations.map(stop=>stop.id),['mta:1','mta:3','mta:4']);
+ assert.deepEqual(board.departures.map(row=>[row.stationId,row.stop.id]),[['mta:1','mta:1'],['mta:1','mta:2']]);
+ assert.equal(nearbyBusBoard(store,busStops,center,{stop:'mta:2'},now).departures.length,2);
 });

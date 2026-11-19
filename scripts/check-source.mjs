@@ -4,6 +4,7 @@ const root = new URL('../', import.meta.url);
 const required = [
   'Backend/data/nyc-lookup.json',
   'Backend/data/restaurants.json',
+  'Backend/data/shapes.json',
   'Backend/community-server.mjs',
   'netlify/functions/api.mjs',
   'Web/dist/index.html',

@@ -1,4 +1,5 @@
 import {subwayFeeds} from './feeds.mjs';
+import {subwayJourneyPoints} from './subway-shapes.mjs';
 
 const stopID=place=>String(place.stop?.gtfsId||'').split(':').at(-1);
 const slack=90000;
@@ -38,7 +39,7 @@ export function createSubwayTransferSearch(store,request){
       duration:(calls[end].arrival-calls[index].departure)/1000,
       route:{shortName:trip.routeId,color:store.tripIndex.routes?.[trip.routeId]?.route_color},
       pinnedTripId:trip.tripId,
-      coordinates:stopIds.map(id=>stops[id]).filter(Boolean).map(stop=>({latitude:stop.latitude,longitude:stop.longitude})),
+      coordinates:subwayJourneyPoints(store,{line:trip.routeId,tripId:trip.tripId,stopIds}),
       stopCalls:stopIds.map(id=>({stopLocation:{gtfsId:'nyct:'+id}}))
     };
   }

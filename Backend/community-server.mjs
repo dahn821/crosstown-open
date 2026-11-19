@@ -6,15 +6,16 @@ import {vehicleQuery,vehicleSnapshot} from './vehicles.mjs';
 import {ridePrediction,rideQuery} from './ride.mjs';
 import {bikeStationSnapshot} from './citi-bike.mjs';
 import {nearbySubwayBoard,stationRadius} from './subway-stations.mjs';
+import {nearbyBusBoard,busStopRadius} from './bus-stops.mjs';
 import {setTimeout as wait} from 'node:timers/promises';
 
 const meters=(a,b)=>Math.hypot((a.latitude-b.latitude)*111200,(a.longitude-b.longitude)*84200);
 const withinNYC=point=>Number.isFinite(point.latitude)&&Number.isFinite(point.longitude)&&point.latitude>=40.48&&point.latitude<=40.94&&point.longitude>=-74.27&&point.longitude<=-73.67;
 const json=(value,status=200)=>Response.json(value,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','X-Robots-Tag':'noindex, noarchive'}});
 
-export function createCommunityAPI({lookup,restaurants,busKey='',beforeRequest=async()=>{},fetcher=fetch,contact='https://github.com/dahn821/crosstown-open'}={}){
+export function createCommunityAPI({lookup,restaurants,busKey='',subwayShapeData,beforeRequest=async()=>{},fetcher=fetch,contact='https://github.com/dahn821/crosstown-open'}={}){
  configureRoutingData({stations:lookup.stationStructures,index:lookup.index});
- const store=new FeedStore({tripIndex:lookup.index,stationStructures:lookup.stationStructures,busKey,fetcher}),cache=new Map();
+ const store=new FeedStore({tripIndex:lookup.index,stationStructures:lookup.stationStructures,busStops:lookup.busStops,subwayShapeData,busKey,fetcher}),cache=new Map();
  const subwayRoutes=Object.entries(lookup.index.routes||{}).map(([shortName,route])=>({shortName,color:route.route_color}));
  const transitStops=[...Object.entries(lookup.index.stops).map(([id,stop])=>({gtfsId:'nyct:'+id,name:stop.name,lat:stop.latitude,lon:stop.longitude,vehicleMode:'SUBWAY',routes:subwayRoutes})),...lookup.busStops.map(stop=>({...stop,vehicleMode:'BUS',routes:[]}))];
  const landmarks=[{id:'penn',name:'Penn Station',neighborhood:'Midtown West',coordinate:{latitude:40.7505,longitude:-73.9934},selectable:true},{id:'ues',name:'96 St & Lexington Ave',neighborhood:'Upper East Side',coordinate:{latitude:40.785,longitude:-73.9518},selectable:true}];
@@ -97,6 +98,10 @@ export function createCommunityAPI({lookup,restaurants,busKey='',beforeRequest=a
      if(url.searchParams.get('mode')==='subway'){
        const board=nearbySubwayBoard(store,coordinate,{stop:url.searchParams.get('stop'),line:url.searchParams.get('line')});
        return json({...board,feedStatus:store.status(),generatedAt:new Date().toISOString(),radiusMeters:stationRadius});
+     }
+     if(url.searchParams.get('mode')==='bus'){
+       const board=nearbyBusBoard(store,lookup.busStops,coordinate,{stop:url.searchParams.get('stop'),line:url.searchParams.get('line')});
+       return json({...board,feedStatus:store.status(),generatedAt:new Date().toISOString(),radiusMeters:busStopRadius});
      }
      const stops=transitStops.map(stop=>({...stop,distance:meters(coordinate,{latitude:stop.lat,longitude:stop.lon})})).filter(stop=>stop.distance<=1200).sort((a,b)=>a.distance-b.distance);
      return json({departures:store.departures(stops,Date.now(),{mode:url.searchParams.get('mode'),stop:url.searchParams.get('stop')}),feedStatus:store.status(),generatedAt:new Date().toISOString(),radiusMeters:1200});

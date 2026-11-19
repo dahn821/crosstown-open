@@ -8,7 +8,7 @@
 
 [functions]
   node_bundler = "esbuild"
-  included_files = ["Backend/data/nyc-lookup.json", "Backend/data/restaurants.json"]
+  included_files = ["Backend/data/nyc-lookup.json", "Backend/data/restaurants.json", "Backend/data/shapes.json"]
 
 [[redirects]]
   from = "/basemap/*"

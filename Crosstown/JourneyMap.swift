@@ -107,7 +107,7 @@ struct JourneyMap: View {
                 onCenterChange?(Coordinate((r.center.latitude * 10000).rounded() / 10000, (r.center.longitude * 10000).rounded() / 10000))
             }
             .overlay {
-                if liveMode == .subway {
+                if liveMode != nil {
                     Image(systemName: "scope").font(.system(size: 31, weight: .medium))
                         .foregroundStyle(Theme.blue).padding(3).background(.white, in: Circle())
                         .shadow(color: .black.opacity(0.22), radius: 3, y: 1)

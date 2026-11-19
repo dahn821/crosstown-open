@@ -22,25 +22,40 @@ export function attachVehicleMap({map,L,api,getRoute,onSnapshot=()=>{}}){
       const html=`<div class="subway-train" style="--vehicle-color:${style.color}">${subwayBullet(vehicle.line,vehicle.routeColor)}${heading}</div>`;
       return L.divIcon({className:'vehicle-pin-container',html,iconSize:[1,1],iconAnchor:[0,0]});
     }
-    const content=(compact?(vehicle.mode==='bus'?icon('bus'):`<b>${esc(vehicle.line)}</b>`):`${icon(vehicle.mode)}<b>${esc(vehicle.line)}</b>`)+heading;
+    const stack=vehicle.nearbyCount>1?`<small class="bus-pin-count" aria-hidden="true">${vehicle.nearbyCount}</small>`:'';
+    const content=(compact?(vehicle.mode==='bus'?icon('bus'):`<b>${esc(vehicle.line)}</b>`):`${icon(vehicle.mode)}<b>${esc(vehicle.line)}</b>`)+heading+stack;
     const html=`<div class="vehicle-pin ${gps?'gps':'station-estimate'} ${compact?'compact':''}" style="--vehicle-color:${color(vehicle)}">${content}</div>`;
     return L.divIcon({className:'vehicle-pin-container',html,iconSize:[1,1],iconAnchor:[0,0]});
   }
   function popup(vehicle){
-    return `<div class="vehicle-popup"><h3>${vehicle.mode==='bus'?'Bus':'Train'} ${esc(vehicle.line)}</h3><strong>${vehicle.accuracy==='gps'?'Reported GPS':'Station estimate'}</strong><p>${esc(vehicle.status)}</p>${vehicle.directionLabel?`<p>${esc(vehicle.directionLabel)}</p>`:''}<p>Reported ${clock(vehicle.reportedAt)} · ${age(vehicle)}s ago</p>${vehicle.accuracy==='gps'?'':'<p>This marker uses the reported or next station, not an exact position between stations.</p>'}<small>${esc(vehicle.source)}</small></div>`;
+    const stack=vehicle.nearbyCount>1?`<p>${vehicle.nearbyCount} nearby buses. Zoom in to see individual positions.</p>`:'';
+    return `<div class="vehicle-popup"><h3>${vehicle.mode==='bus'?'Bus':'Train'} ${esc(vehicle.line)}</h3><strong>${vehicle.accuracy==='gps'?'Reported GPS':'Station estimate'}</strong><p>${esc(vehicle.status)}</p>${vehicle.directionLabel?`<p>${esc(vehicle.directionLabel)}</p>`:''}<p>Reported ${clock(vehicle.reportedAt)} · ${age(vehicle)}s ago</p>${stack}${vehicle.accuracy==='gps'?'':'<p>This marker uses the reported or next station, not an exact position between stations.</p>'}<small>${esc(vehicle.source)}</small></div>`;
+  }
+  function displayedVehicles(vehicles){
+    if(view!=='bus'||map.getZoom()>=15)return vehicles;
+    const cells=new Map();
+    for(const vehicle of vehicles){
+      const p=map.latLngToContainerPoint([vehicle.coordinate.latitude,vehicle.coordinate.longitude]);
+      const cell=Math.floor(p.x/35)+'/'+Math.floor(p.y/35);
+      const representative=cells.get(cell);
+      if(representative)representative.nearbyCount++;
+      else cells.set(cell,{...vehicle,nearbyCount:1});
+    }
+    return [...cells.values()];
   }
   function render(){
-    const visible=(snapshot?.vehicles||[]).filter(v=>age(v)<=90&&modeEnabled(v.mode)),ids=new Set(visible.map(v=>v.id));
+    const reported=(snapshot?.vehicles||[]).filter(v=>age(v)<=90&&modeEnabled(v.mode));
+    const visible=displayedVehicles(reported),ids=new Set(visible.map(v=>v.id));
     for(const [id,marker] of markers)if(!ids.has(id)){layer.removeLayer(marker);markers.delete(id);}
     for(const v of visible){
-      const point=[v.coordinate.latitude,v.coordinate.longitude],label=`${v.mode==='bus'?'Bus':'Train'} ${v.line}, ${v.accuracy==='gps'?'reported GPS':'station estimate'}${v.directionLabel?', '+v.directionLabel:''}`;
+      const point=[v.coordinate.latitude,v.coordinate.longitude],label=`${v.mode==='bus'?'Bus':'Train'} ${v.line}, ${v.accuracy==='gps'?'reported GPS':'station estimate'}${v.directionLabel?', '+v.directionLabel:''}${v.nearbyCount>1?`, ${v.nearbyCount} buses nearby`:''}`;
       let marker=markers.get(v.id);
       if(!marker){marker=L.marker(point,{icon:markerIcon(v),title:label,alt:label,zIndexOffset:v.mode==='bus'?400:300}).bindPopup(popup(v),{maxWidth:290}).addTo(layer);markers.set(v.id,marker);}
       else{marker.setLatLng(point);marker.setIcon(markerIcon(v));marker.setPopupContent(popup(v));}
       marker.getElement()?.setAttribute('aria-label',label);
     }
     if(!snapshot)return;
-    const buses=visible.filter(v=>v.mode==='bus').length,trains=visible.length-buses;
+    const buses=reported.filter(v=>v.mode==='bus').length,trains=reported.length-buses;
     let text=`${buses} bus GPS · ${trains} train station estimates`;
     const bus=snapshot.feedStatus.busVehicles;
     if(modeEnabled('bus')&&bus?.configured===false)text+=' · Bus key needed';

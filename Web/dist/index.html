@@ -3,7 +3,7 @@
 <script type="importmap">{"imports":{"leaflet":"./vendor/leaflet/leaflet-src.esm.js","maplibre-gl":"./vendor/maplibre/maplibre-gl.mjs"}}</script><script type="module" async src="location-startup.mjs"></script>
 <link rel="icon" href="icon.svg" type="image/svg+xml"><link rel="manifest" href="manifest.webmanifest"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Crosstown"><link rel="apple-touch-icon" href="app-icon.png"><link rel="stylesheet" href="vendor/leaflet/leaflet.css"><link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css"><link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="mobile.css"><link rel="stylesheet" href="journey.css"><link rel="stylesheet" href="live-explore.css"></head><body>
 <div id="app" data-main-view="directions"><main id="map" aria-label="New York City street and transit map"></main>
-<div id="subway-target" class="subway-target" aria-hidden="true" hidden><span></span></div>
+<div id="transit-target" class="transit-target" aria-hidden="true" hidden><span></span></div>
 <header class="topbar"><a class="brand" href="#" aria-label="Crosstown home"><span class="brand-icon">↗</span>crosstown</a><span class="city-label">NEW YORK</span></header>
 <nav class="map-tabs" aria-label="Map views">
   <button data-live-view="directions" aria-pressed="true"><span data-icon="explore"></span>Directions</button>
@@ -24,6 +24,7 @@
       <label class="live-filter"><span class="visually-hidden">Filter by line</span><select id="live-line-filter"><option value="">All lines</option></select></label>
     </div>
     <div class="live-legend" aria-label="Dock marker legend"><span> Bikes available</span><span> E-bikes only</span><span> No bikes</span></div>
+    <div class="transit-nearby" role="group" aria-label="Nearby transit stops" hidden></div>
     <div class="live-board"></div>
   </div>
 </section>

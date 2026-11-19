@@ -40,8 +40,6 @@ button.live-item:hover { background:#f4f8fb; }
 .live-item strong { font-size:12px; font-weight:650; line-height:1.28; }
 .live-item small { margin-top:3px; font-size:11px; color:#466473; line-height:1.3; }
 .live-line { background:var(--line-color); color:#fff; border-radius:10px; padding:5px 7px; font-size:11px; font-weight:750; min-width:26px; text-align:center; text-shadow:0 1px 3px #000; }
-.live-times { display:flex; flex-wrap:wrap; gap:4px; justify-content:flex-end; max-width:100px; }
-.live-times time { color:#155349; background:#e8f4f1; border-radius:6px; padding:3px 5px; font-size:10px; font-weight:650; white-space:nowrap; }
 .live-back { color:#224bb7; font-size:12px; font-weight:650; padding:0 6px; }
 .live-empty { padding:13px 6px 9px; font-size:12px; color:#466473; }
 .live-legend { display:flex; align-items:center; flex-wrap:wrap; gap:11px; padding:0 17px 10px; color:#334f62; font-size:10px; }
@@ -49,26 +47,27 @@ button.live-item:hover { background:#f4f8fb; }
 .live-legend span::before { content:''; margin-right:4px; --dock-color:#117959; }
 .live-legend span:nth-child(2)::before { --dock-color:#6749c7; }
 .live-legend span:nth-child(3)::before { --dock-color:#bd4425; }
-.subway-target {
+.transit-target {
   position:absolute; z-index:3; left:max(50%,417px); top:50%; width:38px; height:38px;
-  transform:translate(-50%,-50%); pointer-events:none;
+  transform:translate(-50%,-50%); pointer-events:none; --target-color:#2c43c4;
 }
-.subway-target::before,.subway-target::after,.subway-target span {
+.transit-target::before,.transit-target::after,.transit-target span {
   content:''; position:absolute; border-radius:50%; box-sizing:border-box;
 }
-.subway-target::before {
-  inset:5px; border:2px solid #2c43c4; box-shadow:0 0 0 2px #fff,0 2px 8px #19244d4d;
+.transit-target::before {
+  inset:5px; border:2px solid var(--target-color); box-shadow:0 0 0 2px #fff,0 2px 8px #19244d4d;
 }
-.subway-target::after { inset:15px; background:#2c43c4; border:1.5px solid white; }
-.subway-target span {
+.transit-target::after { inset:15px; background:var(--target-color); border:1.5px solid white; }
+.transit-target span {
   inset:0;
-  background:linear-gradient(#2c43c4,#2c43c4) center top/2px 9px no-repeat,
-    linear-gradient(#2c43c4,#2c43c4) center bottom/2px 9px no-repeat,
-    linear-gradient(#2c43c4,#2c43c4) left center/9px 2px no-repeat,
-    linear-gradient(#2c43c4,#2c43c4) right center/9px 2px no-repeat;
+  background:linear-gradient(var(--target-color),var(--target-color)) center top/2px 9px no-repeat,
+    linear-gradient(var(--target-color),var(--target-color)) center bottom/2px 9px no-repeat,
+    linear-gradient(var(--target-color),var(--target-color)) left center/9px 2px no-repeat,
+    linear-gradient(var(--target-color),var(--target-color)) right center/9px 2px no-repeat;
   filter:drop-shadow(0 0 1px white);
 }
-.subway-target.panning::before { background:#e5eaff69; }
+.transit-target.panning::before { background:#e5eaff69; }
+.transit-target[data-mode="bus"] { --target-color:#215a8e; }
 .subway-bullet {
   display:inline-grid; place-items:center; flex-shrink:0; position:relative; isolation:isolate;
   width:var(--bullet-size,20px); height:var(--bullet-size,20px); color:var(--rail-ink);
@@ -76,21 +75,29 @@ button.live-item:hover { background:#f4f8fb; }
 }
 .subway-bullet::before { content:''; position:absolute; z-index:-1; inset:0; background:var(--rail-color); border-radius:50%; }
 .subway-bullet.express::before { inset:3px; border-radius:2px; transform:rotate(45deg); }
-.subway-station { border-bottom:1px solid #e3ebf0; padding:8px 1px 10px; }
-.subway-station:last-child { border-bottom:0; }
-.subway-station-head {
-  display:flex; align-items:center; gap:8px; width:100%; min-height:44px;
-  text-align:left; border-radius:10px; padding:6px 7px;
+.transit-nearby {
+  display:flex; gap:7px; flex-shrink:0; overflow-x:auto; overscroll-behavior-inline:contain;
+  scrollbar-width:thin; scroll-snap-type:inline proximity; padding:2px 13px 10px;
 }
-button.subway-station-head:hover { background:#eff4ff; }
-.subway-station-head>span:first-child { flex:1; min-width:0; }
-.subway-station-head strong { display:block; font-size:13px; line-height:1.22; }
-.subway-station-head small { display:block; font-size:10px; color:#456172; margin-top:4px; }
-.subway-station-head>.icon { width:13px; height:13px; color:#48617a; }
-.subway-station-lines { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; max-width:49%; --bullet-size:19px; }
-.subway-direction { display:grid; grid-template-columns:minmax(61px,.9fr) minmax(0,2.35fr); align-items:center; gap:9px; padding:3px 6px; }
-.subway-direction>strong { color:#3b556d; font-size:11px; line-height:1.3; }
-.subway-direction>span { display:flex; flex-wrap:wrap; gap:4px; }
+.transit-stop-choice {
+  flex:0 0 auto; max-width:185px; min-height:43px; text-align:left; scroll-snap-align:start;
+  display:flex; flex-direction:column; justify-content:center; gap:3px; padding:6px 10px;
+  border:1px solid #dfe8f1; border-radius:10px; background:#f5f8fc;
+}
+.transit-stop-choice[aria-pressed="true"] { background:#e8efff; color:#243c9d; border-color:#b5c5ef; }
+.transit-stop-choice strong { white-space:nowrap; max-width:100%; overflow:hidden; text-overflow:ellipsis; font-size:12px; }
+.transit-stop-choice small { color:#476078; font-size:10px; }
+.arrival-direction { display:grid; grid-template-columns:minmax(65px,.9fr) minmax(0,2.35fr); align-items:center; gap:9px; padding:5px 6px; }
+.arrival-direction>strong { color:#3b556d; font-size:11px; line-height:1.3; }
+.arrival-direction>span,.bus-arrival>span { display:flex; flex-wrap:wrap; justify-content:flex-start; gap:4px; }
+.bus-arrival {
+  display:grid; grid-template-columns:max-content minmax(0,1fr) max-content; gap:8px; align-items:center;
+  min-height:36px; padding:5px 6px; border-bottom:1px solid #ebf0f3;
+}
+.bus-arrival>small { color:#3b556d; font-size:11px; line-height:1.3; }
+.bus-arrival>span:last-child { justify-content:flex-end; max-width:103px; }
+.bus-arrival time { background:#e8f0fa; color:#244776; border-radius:7px; padding:3px 5px; font-size:10px; font-weight:650; white-space:nowrap; }
+.live-back .icon { width:12px; height:12px; }
 .subway-arrival {
   display:flex; align-items:center; gap:4px; padding:3px 6px 3px 4px; border-radius:18px;
   background:#f0f4f8; color:#1d3347; font-size:11px; font-variant-numeric:tabular-nums; white-space:nowrap;
@@ -101,6 +108,11 @@ button.subway-station-head:hover { background:#eff4ff; }
 .subway-train .vehicle-heading { position:absolute; inset:-6px; width:auto; height:auto; color:var(--vehicle-color); }
 .subway-train .vehicle-heading svg { position:absolute; top:-5px; left:50%; width:9px; height:9px; transform:translateX(-50%); stroke:white; paint-order:stroke; stroke-width:2px; }
 .vehicle-pin-container:focus-visible .subway-train { outline:3px solid #172b33; outline-offset:3px; }
+.bus-pin-count {
+  position:absolute; top:-5px; right:-6px; min-width:15px; padding:1px 3px;
+  border:1px solid #fff; border-radius:9px; background:#1d417b; color:#fff;
+  text-align:center; font-size:9px; font-weight:700;
+}
 .bike-pace-fields { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:14px; }
 .bike-pace-fields label {
   display:grid; grid-template-columns:minmax(0,1fr) auto; gap:4px 6px; align-items:center;
@@ -114,7 +126,7 @@ button.subway-station-head:hover { background:#eff4ff; }
   .map-tabs button { padding:0 8px; }
 }
 @media (max-width:700px) {
-  .subway-target { left:50%; top:clamp(90px,calc(63% - 103px - env(safe-area-inset-bottom)),50%); }
+  .transit-target { left:50%; top:clamp(90px,calc(63% - 103px - env(safe-area-inset-bottom)),50%); }
   .map-tabs { top:calc(9px + env(safe-area-inset-top)); left:10px; right:10px; transform:none; }
   .map-tabs button { flex:1; min-width:0; padding:0 5px; min-height:39px; font-size:12px; }
   .map-tabs .icon { width:15px; height:15px; }
@@ -128,10 +140,13 @@ button.subway-station-head:hover { background:#eff4ff; }
     top:auto; left:10px; right:10px; bottom:calc(74px + env(safe-area-inset-bottom));
     width:auto; max-height:37dvh; border-radius:17px;
   }
+  #live-explore:is([data-mode="subway"],[data-mode="bus"]) { max-height:34dvh; }
+  #live-explore:is([data-mode="subway"],[data-mode="bus"]) .live-header { padding-block:5px; }
+  #live-explore:is([data-mode="subway"],[data-mode="bus"]) .live-toolbar { padding-block:1px 7px; }
   .live-filter select { font-size:16px; max-width:106px; }
   .live-title { font-size:16px; }
 }
 @media (max-width:340px) {
   .map-tabs .icon { display:none; }
-  .live-times { max-width:65px; }
+  .bus-arrival>span:last-child { max-width:80px; }
 }

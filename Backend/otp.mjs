@@ -5,6 +5,7 @@ import {walkingPaces,walkingSpeed} from './walking.mjs';
 import {subwayOptions,predictionSnapshot} from './subway-options.mjs';
 import {classicCyclingSpeed,freshBikeStation,lowAssistPickup,lowAssistTrip,rentalDuration} from './citi-bike.mjs';
 import {createSubwayTransferSearch} from './subway-transfers.mjs';
+import {subwayJourneyPoints} from './subway-shapes.mjs';
 export const OTP_URL=process.env.OTP_URL||'http://127.0.0.1:9090/otp/gtfs/v1';
 export async function graphql(query,variables={},fetcher=fetch){
   const response=await fetcher(OTP_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query,variables}),signal:AbortSignal.timeout(45000)});
@@ -14,7 +15,7 @@ export async function graphql(query,variables={},fetcher=fetch){
 const read=name=>{try{return JSON.parse(fs.readFileSync(new URL('./data/'+name,import.meta.url),'utf8'));}catch{return {};}};
 const stationStructures=read('station-structures.json');
 const structures=new Map((Array.isArray(stationStructures)?stationStructures:[]).map(s=>[s.gtfs_stop_id,s.structure]));
-const shapes=read('shapes.json');let tripIndex=read('trip-index.json');
+let tripIndex=read('trip-index.json');
 export function configureRoutingData({stations,index}){
   if(stations){structures.clear();for(const station of stations)structures.set(station.gtfs_stop_id,station.structure);}
   if(index)tripIndex=index;
@@ -195,8 +196,7 @@ async function bikeConnections(request,store,searcher=search,candidateLimit=8,eg
     const a=egressBike?access[0]:access.find(r=>r.legs.some(l=>l.mode==='BICYCLE'));if(!a)return null;
     const egress=await searcher(stopInput(c.toId),toInput(request.destination),{direct:egressBike?bikeModes:['WALK'],directOnly:true},p,c.arr);
     const e=egressBike?egress.find(r=>r.legs.some(l=>l.mode==='BICYCLE')):egress[0];if(!e)return null;
-    const shapeId=String(c.trip.tripId).split('_').at(-1),shape=shapes[shapeId];let geometry=c.updates.map(u=>stops[u.stopId]).filter(Boolean).map(s=>({latitude:s.latitude,longitude:s.longitude}));
-    if(shape?.length){const nearest=point=>shape.reduce((best,v,i)=>distance(point,{latitude:v[0],longitude:v[1]})<best.d?{i,d:distance(point,{latitude:v[0],longitude:v[1]})}:best,{i:0,d:Infinity}).i;const i=nearest(c.from),j=nearest(c.to);if(j>i)geometry=shape.slice(i,j+1).map(v=>({latitude:v[0],longitude:v[1]}));}
+    const geometry=subwayJourneyPoints(store,{line:c.line,tripId:c.trip.tripId,stopIds:c.updates.map(call=>call.stopId)});
     const rawPlace=(s,id)=>({name:s.name,lat:s.latitude,lon:s.longitude,stop:{gtfsId:'nyct:'+id}});
     const transit={mode:'SUBWAY',duration:(c.arr-c.dep)/1000,from:rawPlace(c.from,c.fromId),to:rawPlace(c.to,c.toId),route:{shortName:c.line,color:tripIndex.routes?.[c.line]?.route_color},start:{estimated:{time:new Date(c.dep).toISOString()}},end:{estimated:{time:new Date(c.arr).toISOString()}},coordinates:geometry,stopCalls:c.updates.map(u=>({stopLocation:{gtfsId:'nyct:'+u.stopId}}))};
     return {legs:[...a.legs,transit,...e.legs]};
@@ -297,7 +297,8 @@ export async function route(input,store,{searcher=search,bikeCandidateLimit=8,re
   const snapshot=predictionSnapshot(store),pairs=raw.map(raw=>({raw,route:normalize(raw,request,snapshot)})).filter(pair=>pair.route);
   const faster=fasterSubwayTransfers(pairs,request,snapshot);
   pairs.push(...faster);
-  const options=subwayOptions(pairs,request,snapshot,{normalize,rank,primaryTransitMode,geometry:connection=>connection.stopIds.map(id=>tripIndex.stops?.[id]).filter(Boolean).map(stop=>({latitude:stop.latitude,longitude:stop.longitude}))});
+  const options=subwayOptions(pairs,request,snapshot,{normalize,rank,primaryTransitMode,
+    geometry:connection=>subwayJourneyPoints(snapshot,connection,{requireShape:true})});
   const routes=bestRoutes(options.primaries,p),routeGroups=compareModes(options.primaries,p,options.transitCandidates),used=new Set([...routes,...Object.values(routeGroups).flat()].flatMap(route=>route.alternativeIds||[])),alternativeRoutes=Object.fromEntries(Object.entries(options.alternativeRoutes).filter(([id])=>used.has(id)));
   if(request.arriveBy!=null&&p.priority==='fastest')for(const r of [...routes,...Object.values(routeGroups).flat()])if(!Number.isFinite(r.lowAssistMinutesSaved))r.explanation='Shortest travel time among the connections found that meet your arrival deadline and limits.';
   return {routes,routeGroups,alternativeRoutes,searchBounds:{resultsPerFamily:10,windowMinutes:90,extraBikeConnections:8,lowAssistPickupLimit},notice:'MTA stop predictions and current Citi Bike station reports. Street travel and outdoor exposure are estimates. Availability can change before arrival.',consideredRoutes:raw.length+faster.length,validRoutes:pairs.length,optimality:'best-found-within-bounded-search',timing:{mode:request.arriveBy!=null?'arriveBy':request.departureTime?'departAt':'now',time:new Date(request.arriveBy??request.depart).toISOString()},isSample:false,generatedAt:new Date().toISOString(),feedStatus:store.status(),searchedFamilies:families.length+1,excludedScheduled:p.requireLiveTransit,partialSearch:errors.length>0,warnings:[...(!store.busKey?['Live bus predictions need a Bus Time API key. Bus schedules are only included if you turn off live-only transit.']:[]),...errors.map(()=> 'One route family could not be checked.')].filter((v,i,a)=>a.indexOf(v)===i)};

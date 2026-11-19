@@ -20,7 +20,8 @@ const arrivalTime=departure=>`<time datetime="${esc(departure.departureTime)}" d
 const directionOrder=direction=>direction==='Uptown'?0:direction==='Downtown'?1:2;
 
 export function attachLiveExplore({map,L,api,vehicles,getLocation}){
-  const panel=document.querySelector('#live-explore'),body=panel.querySelector('.live-board'),count=panel.querySelector('.live-count'),target=document.querySelector('#subway-target');
+  const panel=document.querySelector('#live-explore'),body=panel.querySelector('.live-board'),count=panel.querySelector('.live-count'),target=document.querySelector('#transit-target');
+  const nearby=panel.querySelector('.transit-nearby');
   const heading=panel.querySelector('.live-title'),status=panel.querySelector('.live-map-report'),select=panel.querySelector('#live-line-filter');
   const detail=panel.querySelector('.live-detail'),toggle=panel.querySelector('[data-live-toggle]');
   const lines=L.layerGroup().addTo(map),stops=L.layerGroup().addTo(map),dockLayer=L.layerGroup().addTo(map);
@@ -29,8 +30,9 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation}){
   railPane.style.pointerEvents='none';
   const railRenderer=L.canvas({pane:'subway-rails',padding:.2});
   const dockRenderer=L.canvas({padding:.2});
-  const subwayLines=new Set();
-  let view='directions',data,network,focused,selectedLine='',pending,moveTimer,failure='',lineOptionsKey='';
+  const linesSeen={subway:new Set(),bus:new Set()};
+  let view='directions',data,network,focused,selectedStop,selectedLine='',pending,moveTimer,failure='',lineOptionsKey='';
+  const showingTransit=()=>view==='subway'||view==='bus';
 
   function targetPoint(){
     const marker=target.getBoundingClientRect(),container=map.getContainer().getBoundingClientRect();
@@ -46,8 +48,8 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation}){
   }
   function updateLines(){
     const reported=[...(data?.departures||[]).map(d=>d.line),...(network?.segments||[]).map(s=>s.line)];
-    if(view==='subway'&&!selectedLine)for(const line of reported)if(line)subwayLines.add(line);
-    const entries=[...new Set([selectedLine,...reported,...(view==='subway'?subwayLines:[])].filter(Boolean))]
+    if(showingTransit()&&!selectedLine)for(const line of reported)if(line)linesSeen[view].add(line);
+    const entries=[...new Set([selectedLine,...reported,...(linesSeen[view]||[])].filter(Boolean))]
       .sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
     const key=entries.join('|');
     if(key!==lineOptionsKey){
@@ -57,12 +59,12 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation}){
     select.value=selectedLine;
   }
   function focusStation(station){
-    focused=station;
+    focused=station;selectedStop=station.id;
     body.scrollTop=0;
     showExpanded(true);
     if(view==='bike')renderDocks();
     else{data=null;renderBoard();queueBoard();}
-    if(view==='subway'){moveStationToTarget(station.coordinate);return;}
+    if(showingTransit()){moveStationToTarget(station.coordinate);return;}
     const target=point(station.coordinate);
     if(!map.getBounds().pad(-.20).contains(target))map.panTo(target);
   }
@@ -92,76 +94,80 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation}){
     for(const station of stationList){
       const pos=point(station.coordinate);
       if(!map.getBounds().contains(pos))continue;
-      const id=station.complexId||station.id,active=focused?.id===id,near=boardStations.has(id);
+      const id=station.complexId||station.id,active=(focused?.id||selectedStop)===id,near=boardStations.has(id);
       L.circleMarker(pos,{radius:active||near?6:4,color:view==='bus'?'#2262aa':active||near?'#243dcd':'#233142',
-        weight:active||near?2.5:1.7,fillColor:active?'#dbe2ff':'#fff',fillOpacity:1})
+        weight:active||near?2.5:1.7,fillColor:active?(view==='bus'?'#d3e7fb':'#dbe2ff'):'#fff',fillOpacity:1})
         .bindTooltip(esc(station.name)).on('click',()=>focusStation({...station,id})).addTo(stops);
     }
   }
-  function renderSubwayBoard(rows,stale){
-    const fallback=[...new Map(rows.map(row=>[stationID(row),{...row.stop,id:stationID(row),metersAway:row.metersAway}])).values()];
-    const stations=data?.stations??fallback.sort((a,b)=>a.metersAway-b.metersAway).slice(0,4);
-    if(focused)count.textContent=focused.name;
-    else if(stations.length)count.textContent=`${stations.length} closest ${stations.length===1?'station':'stations'}`;
-    else count.textContent=data?'Near the map marker':'Drag the map to find stations';
-    const empty=data?(selectedLine?'No stations for this line near the marker. Drag the map or choose All lines.':'No stations within ¾ mile. Drag the map to explore.'):'Checking nearby stations…';
-    const message=failure||(stale?'Current MTA predictions are unavailable.':empty);
-    const scroll=body.scrollTop;
-    body.innerHTML=(focused?'<button class="live-back" data-live-back>‹ Nearby stations</button>':'')+
-      (stations.length?stations.map(station=>{
-        const routes=new Map(),directions=new Map();
-        for(const departure of rows){
-          if(stationID(departure)!==station.id)continue;
-          routes.set(departure.line,departure.routeColor);
-          const direction=departure.direction||'Upcoming trains';
-          if(!directions.has(direction))directions.set(direction,[]);
-          directions.get(direction).push(departure);
-        }
-        const name=`<span><strong>${esc(station.name)}</strong>${focused?'':`<small>${feet(station.metersAway)}</small>`}</span>`;
-        const badges=`<span class="subway-station-lines">${[...routes].sort(([a],[b])=>a.localeCompare(b,undefined,{numeric:true})).map(([line,color])=>subwayBullet(line,color)).join('')}</span>`;
-        const header=focused?`<div class="subway-station-head">${name}${badges}</div>`:`<button class="subway-station-head" data-live-station="${esc(station.id)}">${name}${badges}${icon('chevron')}</button>`;
-        const arrivals=[...directions].sort(([a],[b])=>directionOrder(a)-directionOrder(b)||a.localeCompare(b)).map(([direction,items])=>{
-          const seen=new Set();
-          const shown=focused?items.slice(0,12):items.filter(item=>!seen.has(item.line)&&seen.add(item.line)).slice(0,4);
-          return `<div class="subway-direction"><strong>${esc(direction)}</strong><span>${shown.map(row=>`<span class="subway-arrival">${subwayBullet(row.line,row.routeColor)}${arrivalTime(row)}</span>`).join('')}</span></div>`;
-        }).join('');
-        return `<section class="subway-station">${header}${arrivals||`<p class="live-empty">${stale?'MTA predictions unavailable.':'No live departures reported.'}</p>`}</section>`;
-      }).join(''):`<p class="live-empty">${esc(message)}</p>`);
-    body.scrollTop=scroll;
+  function renderStopPicker(stations,active){
+    nearby.hidden=Boolean(focused)||stations.length===0;
+    if(nearby.hidden){nearby.innerHTML='';return;}
+    const scroll=nearby.scrollLeft;
+    const markup=stations.map(station=>`<button class="transit-stop-choice" data-board-stop="${esc(station.id)}" aria-pressed="${station.id===active.id}"><strong>${esc(station.name)}</strong><small>${feet(station.metersAway)}</small></button>`).join('');
+    if(nearby.innerHTML!==markup){nearby.innerHTML=markup;nearby.scrollLeft=scroll;}
+  }
+  function subwayTimes(rows){
+    const groups=new Map();
+    for(const item of rows){
+      const direction=item.direction||'Upcoming trains';
+      if(!groups.has(direction))groups.set(direction,[]);
+      groups.get(direction).push(item);
+    }
+    return [...groups].sort(([a],[b])=>directionOrder(a)-directionOrder(b)||a.localeCompare(b)).map(([direction,items])=>{
+      const seen=new Set();
+      const shown=focused?items.slice(0,12):items.filter(item=>!seen.has(item.line)&&seen.add(item.line)).slice(0,4);
+      return `<div class="arrival-direction"><strong>${esc(direction)}</strong><span>${shown.map(row=>`<span class="subway-arrival">${subwayBullet(row.line,row.routeColor)}${arrivalTime(row)}</span>`).join('')}</span></div>`;
+    }).join('');
+  }
+  function busTimes(rows){
+    const groups=new Map();
+    for(const item of rows){
+      const key=[item.line,item.direction||''].join('|');
+      if(!groups.has(key))groups.set(key,[]);
+      groups.get(key).push(item);
+    }
+    return [...groups.values()].map(items=>{
+      const first=items[0];
+      return `<div class="bus-arrival">${badge(first)}<small>${esc(first.direction||'Live arrival')}</small><span>${items.slice(0,3).map(arrivalTime).join('')}</span></div>`;
+    }).join('');
   }
   function renderBoard(){
     updateLines();
-    renderStops();
     const rows=(data?.departures||[]).filter(d=>(!selectedLine||d.line===selectedLine)&&Date.parse(d.departureTime)>Date.now()-30000);
+    const fallback=[...new Map(rows.map(row=>[stationID(row),{...row.stop,id:stationID(row),metersAway:row.metersAway}])).values()];
+    const stations=data?.stations??fallback.sort((a,b)=>a.metersAway-b.metersAway).slice(0,4);
+    const active=stations.find(station=>station.id===selectedStop)||stations[0];
+    selectedStop=active?.id;
+    const label=view==='bus'?'stop':'station';
+    if(focused)count.textContent=focused.name;
+    else if(stations.length)count.textContent=`${stations.length} nearby ${label}${stations.length===1?'':'s'}`;
+    else count.textContent=data?'Near the map marker':`Drag the map to find ${label}s`;
+    renderStopPicker(stations,active);
+    renderStops();
     const blocked=view==='bus'&&data?.feedStatus?.bus?.configured===false;
     const stale=data&&(view==='bus'?data.feedStatus.bus.stale:data.feedStatus.subway.every(feed=>feed.stale));
-    if(view==='subway'){renderSubwayBoard(rows,stale);return;}
-    count.textContent=focused?.name||(data?`${new Set(rows.map(stationID)).size} stops near map center`:'Pan to a stop or choose a line');
-    const groups=new Map();
-    for(const departure of rows){
-      const id=stationID(departure),key=focused?`${departure.line}|${departure.direction||''}`:`${id}|${departure.line}|${departure.direction||''}`;
-      if(!groups.has(key))groups.set(key,[]);
-      groups.get(key).push(departure);
-    }
-    const contents=[...groups.values()].slice(0,18).map(group=>{
-      const d=group[0],times=group.slice(0,3).map(arrivalTime).join('');
-      const label=`<span><strong>${esc(d.stop.name)}</strong><small>${esc(d.direction||'Live MTA prediction')}</small></span>`;
-      const content=badge(d)+label+`<span class="live-times">${times}</span>`;
-      return focused?`<div class="live-item">${content}</div>`:`<button class="live-item" data-live-station="${esc(stationID(d))}">${content}</button>`;
-    }).join('');
-    body.innerHTML=(focused?'<button class="live-back" data-live-back>‹ Nearby stops</button>':'')+
-      (blocked?'<p class="live-empty">Bus Time needs a connection.</p><button class="text-button" data-action="sources">Open Sources</button>':contents||
-       `<p class="live-empty">${esc(failure||(stale?'Current MTA predictions are unavailable.':data?'No upcoming departures reported here.':'Checking departures…'))}</p>`);
+    const timing=active?rows.filter(item=>stationID(item)===active.id):[];
+    const arrivals=view==='subway'?subwayTimes(timing):busTimes(timing);
+    const empty=active?'No live arrivals reported at this stop.':data?
+      (selectedLine?'Drag toward this line or choose All lines.':`No ${label}s within ¾ mile. Drag the map to explore.`):`Checking nearby ${label}s…`;
+    const message=failure||(stale?'Current MTA predictions are unavailable.':empty);
+    const scroll=body.scrollTop;
+    const more=view==='subway'&&active&&!focused&&arrivals?`<button class="live-back" data-live-station="${esc(active.id)}">All departures ${icon('chevron')}</button>`:'';
+    body.innerHTML=(focused?`<button class="live-back" data-live-back>‹ Nearby ${label}s</button>`:'')+
+      (blocked?'<p class="live-empty">Bus Time needs a connection.</p><button class="text-button" data-action="sources">Open Sources</button>':
+      arrivals?arrivals+more:`<p class="live-empty">${esc(message)}</p>`);
+    body.scrollTop=scroll;
   }
   async function refresh(){
     if(view==='directions'||document.hidden)return;
     pending?.abort();
     const controller=new AbortController();pending=controller;
-    const center=view==='subway'?map.containerPointToLatLng(targetPoint()):map.getCenter();
+    const center=showingTransit()?map.containerPointToLatLng(targetPoint()):map.getCenter();
     const where=focused?.coordinate||{latitude:center.lat,longitude:center.lng};
     const query=new URLSearchParams({lat:where.latitude.toFixed(4),lon:where.longitude.toFixed(4),mode:view});
     if(focused)query.set('stop',focused.id);
-    if(view==='subway'&&selectedLine)query.set('line',selectedLine);
+    if(showingTransit()&&selectedLine)query.set('line',selectedLine);
     try{
       const result=await api(view==='bike'?'/bike-stations':'/transit?'+query,{signal:controller.signal});
       if(pending!==controller)return;
@@ -178,16 +184,18 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation}){
   }
   function queueBoard(){
     clearTimeout(moveTimer);pending?.abort();pending=null;
-    moveTimer=setTimeout(refresh,view==='subway'?260:420);
+    moveTimer=setTimeout(refresh,showingTransit()?260:420);
   }
   function reset(){
-    data=null;network=null;focused=null;selectedLine='';failure='';
+    data=null;network=null;focused=null;selectedStop=null;selectedLine='';failure='';
+    nearby.hidden=true;nearby.innerHTML='';
     pending?.abort();pending=null;clearTimeout(moveTimer);
     lines.clearLayers();stops.clearLayers();dockLayer.clearLayers();
   }
   map.on('dragstart',()=>{
-    if(view!=='subway')return;
-    focused=null;pending?.abort();pending=null;
+    if(!showingTransit())return;
+    focused=null;selectedStop=null;pending?.abort();pending=null;
+    nearby.scrollLeft=0;
     clearTimeout(moveTimer);
     body.scrollTop=0;
     target.classList.add('panning');
@@ -197,21 +205,24 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation}){
     if(view==='bike')renderDocks();
     else if(view!=='directions'&&!focused)queueBoard();
   });
-  map.on('resize',()=>{if(view==='subway'&&!focused)queueBoard();});
+  map.on('resize',()=>{if(showingTransit()&&!focused)queueBoard();});
   panel.addEventListener('click',event=>{
     const button=event.target.closest('button');
     if(!button)return;
     if(button.hasAttribute('data-live-toggle'))showExpanded(detail.hidden);
     if(button.hasAttribute('data-live-refresh')){refresh();vehicles.refresh();}
     if(button.hasAttribute('data-live-center')){
-      focused=null;const coordinate=getLocation();
-      if(view==='subway')moveStationToTarget(coordinate||{latitude:cityCenter[0],longitude:cityCenter[1]},15);
+      focused=null;selectedStop=null;const coordinate=getLocation();
+      if(showingTransit())moveStationToTarget(coordinate||{latitude:cityCenter[0],longitude:cityCenter[1]},15);
       else map.setView(coordinate?point(coordinate):cityCenter,15);
       if(view==='bike')renderDocks();else queueBoard();
     }
     if(button.hasAttribute('data-live-back')){
-      focused=null;
+      focused=null;selectedStop=null;
       if(view==='bike')renderDocks();else{data=null;renderBoard();queueBoard();}
+    }
+    if(button.dataset.boardStop){
+      selectedStop=button.dataset.boardStop;body.scrollTop=0;renderBoard();return;
     }
     const id=button.dataset.liveStation;
     if(!id)return;
@@ -220,9 +231,9 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation}){
   });
   select.addEventListener('change',()=>{
     selectedLine=select.value;network=null;lines.clearLayers();
-    if(view==='subway')body.scrollTop=0;
+    selectedStop=null;body.scrollTop=0;nearby.scrollLeft=0;
     vehicles.setLine(selectedLine);renderBoard();
-    if(view==='subway')queueBoard();
+    if(showingTransit())queueBoard();
   });
   document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});
   setInterval(refresh,30000);
@@ -235,12 +246,12 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation}){
     setView(next){
       if(next===view)return;
       view=next;reset();
-      target.hidden=view!=='subway';
+      target.hidden=!showingTransit();target.dataset.mode=view;
       panel.hidden=view==='directions';panel.dataset.mode=view;
       vehicles.setView(view);
       if(panel.hidden)return;
       heading.textContent=titles[view];
-      count.textContent=view==='bike'?'Checking dock availability…':view==='subway'?'Drag the map to find stations':'Checking nearby stops…';
+      count.textContent=view==='bike'?'Checking dock availability…':view==='subway'?'Drag the map to find stations':'Drag the map to find stops';
       status.textContent=view==='bike'?'Citi Bike GBFS':view==='bus'?'MTA Bus Time GPS':'MTA station reports · estimated train positions';
       body.innerHTML='<p class="live-empty">Loading live reports…</p>';
       panel.querySelector('.live-filter').hidden=view==='bike';

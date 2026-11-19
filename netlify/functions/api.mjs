@@ -8,10 +8,10 @@ let ready;
 
 async function initialize(){
   const read=async name=>JSON.parse(await fs.readFile(path.join(process.cwd(),'Backend/data',name),'utf8'));
-  const [lookup,restaurants]=await Promise.all([read('nyc-lookup.json'),read('restaurants.json')]);
+  const [lookup,restaurants,subwayShapeData]=await Promise.all([read('nyc-lookup.json'),read('restaurants.json'),read('shapes.json')]);
   const storage=getStore({name:'crosstown-routing-usage',consistency:'strong'});
   const beforeRequest=communityBudget(storage,{local:process.env.NETLIFY_DEV==='true'});
-  return createCommunityAPI({lookup,restaurants,busKey:process.env.MTA_BUS_TIME_KEY||'',beforeRequest});
+  return createCommunityAPI({lookup,restaurants,subwayShapeData,busKey:process.env.MTA_BUS_TIME_KEY||'',beforeRequest});
 }
 
 export default async function handler(request){

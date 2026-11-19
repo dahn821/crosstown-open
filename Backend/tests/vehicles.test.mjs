@@ -67,16 +67,27 @@ test('a canceled trip update suppresses a matching vehicle report',()=>{
  assert(!vehicleSnapshot(s,{now}).vehicles.some(v=>v.mode==='subway'));
 });
 test('optional subway network uses active directional calls and excludes skipped stations',()=>{
- const s=store();
- s.tripIndex.stops.nextN={name:'Next',latitude:40.760,longitude:-73.982};
- s.tripIndex.stops.skippedN={name:'Skipped',latitude:40.750,longitude:-73.982};
+ const stops={'632N':{name:'33 St',latitude:40.746,longitude:-73.982},
+  nextN:{name:'Next',latitude:40.760,longitude:-73.982},skippedN:{name:'Skipped',latitude:40.750,longitude:-73.982}};
+ const s=new FeedStore({tripIndex:{stops,routes:{6:{route_color:'00933C'}}},
+  subwayShapeData:{'6..N01R':[[40.746,-73.982],[40.752,-73.98],[40.760,-73.982]]}});
  const calls=[{stopId:'632N',arrival:{time:seconds+60}},{stopId:'skippedN',scheduleRelationship:1},{stopId:'nextN',arrival:{time:seconds+180}}];
- s.entries.get('gtfs').message.entity.push({tripUpdate:{trip:{tripId:'live',routeId:'6'},stopTimeUpdate:calls}});
+ s.entries.set('gtfs',{sourceTimestamp:now,message:{entity:[{tripUpdate:{trip:{tripId:'live_6..N',routeId:'6'},stopTimeUpdate:calls}}]}});
  const options=vehicleQuery(new URLSearchParams('modes=subway&network=1&lines=6'));
  const network=vehicleSnapshot(s,{...options,now}).network;
  assert.deepEqual(network.stations.map(stop=>stop.name),['33 St','Next']);
- assert.deepEqual(network.segments,[{line:'6',color:'00933C',points:[[40.746,-73.982],[40.76,-73.982]]}]);
+ assert.deepEqual(network.segments,[{line:'6',color:'00933C',points:[[40.746,-73.982],[40.752,-73.98],[40.76,-73.982]]}]);
  assert.equal(vehicleSnapshot(s,{now}).network,undefined);
+});
+test('unmatched live subway detours retain the stops without drawing a straight rail segment',()=>{
+ const stops={aN:{name:'A',latitude:40.74,longitude:-73.98},bN:{name:'B',latitude:40.76,longitude:-73.96}};
+ const s=new FeedStore({tripIndex:{stops},subwayShapeData:{'6..N01R':[[40.74,-73.98],[40.76,-73.98]]}});
+ const calls=[{stopId:'aN',arrival:{time:seconds+60}},{stopId:'bN',arrival:{time:seconds+150}}];
+ s.entries.set('gtfs',{sourceTimestamp:now,message:{entity:[{tripUpdate:{trip:{tripId:'test_6..N01R',routeId:'6'},stopTimeUpdate:calls}}]}});
+ const {network}=vehicleSnapshot(s,{modes:['subway'],network:true,now});
+ assert.equal(network.stations.length,2);
+ assert.equal(network.segments.length,0);
+ assert.equal(network.unmatchedSegments,1);
 });
 test('vehicle provider failures never expose the private credential in source status',async()=>{
  const key='private-test-value',s=new FeedStore({tripIndex:{},busKey:key,fetcher:async url=>{throw Error('Request failed: '+url);}});
