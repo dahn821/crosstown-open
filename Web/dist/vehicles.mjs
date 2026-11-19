@@ -1,30 +1,30 @@
 import {icon} from './icons.mjs';
 import {subwayBullet,subwayStyle} from './subway-ui.mjs';
-import {trainIsDue,vehicleReports,vehicleSource} from './transit-arrivals.mjs';
+import {platformID,trainIsDue,vehicleReports,vehicleSource} from './transit-arrivals.mjs';
 import {sampleTrack} from './track-position.mjs';
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const color=v=>/^[0-9a-f]{6}$/i.test(v.routeColor)?'#'+v.routeColor:v.mode==='bus'?'#2d5bff':'#25815f';
 export function attachVehicleMap({map,L,api,getRoute,onSelect,onSnapshot=()=>{}}){
   const layer=L.layerGroup().addTo(map),markers=new Map(),control=document.createElement('section');
   control.className='vehicle-map-control';control.setAttribute('aria-label','Live vehicle map layers');
-  control.innerHTML=`<button class="vehicle-layer-title" aria-expanded="false">${icon('activity')} Live vehicles <span>⌄</span></button><div class="vehicle-layer-options" hidden><label><input type="checkbox" name="bus" checked>Bus GPS</label><label><input type="checkbox" name="subway" checked>Train station reports and estimates</label><label><input type="checkbox" name="routeOnly">Selected route lines</label><p>Tap a vehicle to follow its upcoming stops.</p></div><p class="vehicle-map-status" role="status">Checking vehicle reports…</p><button class="vehicle-expand">Expand live map</button>`;
+  control.innerHTML=`<button class="vehicle-layer-title" aria-expanded="false">${icon('activity')} Live vehicles <span>⌄</span></button><div class="vehicle-layer-options" hidden><label><input type="checkbox" name="bus">Bus GPS</label><label><input type="checkbox" name="subway">Train station reports and estimates</label><label><input type="checkbox" name="routeOnly">Selected route lines</label><p>Tap a vehicle to follow its upcoming stops.</p></div><p class="vehicle-map-status" role="status">Off</p><button class="vehicle-expand" hidden>Expand live map</button>`;
   document.querySelector('#app').append(control);
   const status=control.querySelector('.vehicle-map-status'),options=control.querySelector('.vehicle-layer-options'),title=control.querySelector('.vehicle-layer-title');
   let controller,requestID=0,moveTimer,snapshot,suspended=false,view='directions',line='',lastQuery='',requestedAt=0;
-  let predictions=[],reports=[],selectedTrip=null,trackingReport=null;
+  let stationTrains=new Map(),reports=[],selectedTrip=null,trackingReport=null;
   let motionFrame=0,lastFrame=0;
   const reducedMotion=matchMedia('(prefers-reduced-motion: reduce)');
   const modeEnabled=mode=>view==='directions'?control.querySelector(`[name="${mode}"]`).checked:mode===view;
   function clear(){
-    controller?.abort();controller=null;requestID++;snapshot=null;lastQuery='';layer.clearLayers();markers.clear();
+    controller?.abort();controller=null;requestID++;snapshot=null;lastQuery='';reports=[];layer.clearLayers();markers.clear();
   }
   function markerIcon(vehicle){
     const gps=vehicle.accuracy==='gps',compact=map.getZoom()<15,heading=vehicle.bearing==null?'':`<span class="vehicle-heading" aria-hidden="true" style="transform:rotate(${Number(vehicle.bearing)}deg)"><svg viewBox="0 0 16 16"><path d="M8 1 14 14 8 11 2 14Z"/></svg></span>`;
-    const dueCount=vehicle.group?vehicle.group.filter(v=>v.due).length:Number(vehicle.due);
+    const dueCount=vehicle.group?vehicle.group.filter(v=>v.due).length:Number(Boolean(vehicle.due));
     const namedCount=vehicle.group?.length||1;
     const count=dueCount||namedCount;
     const stack=count>1?`<small class="bus-pin-count" aria-hidden="true">${count}</small>`:'';
-    const due=dueCount===0||view!=='subway'?'':`<span class="train-due">Due${dueCount>1?' ×'+dueCount:''}</span>`;
+    const due=dueCount>0&&view==='subway'?`<span class="train-due">Due${dueCount>1?' ×'+dueCount:''}</span>`:'';
     const selected=selectedTrip&&(vehicle.trackingId===selectedTrip||vehicle.group?.some(v=>v.trackingId===selectedTrip));
     const flags=`${selected?'vehicle-selected':''} ${['prediction-stop','interpolated'].includes(vehicle.accuracy)?'vehicle-prediction':''}`;
     if(view==='subway'){
@@ -100,8 +100,8 @@ export function attachVehicleMap({map,L,api,getRoute,onSelect,onSnapshot=()=>{}}
     const currentReport=trackingReport&&current.find(v=>v.trackingId===trackingReport.trackingId);
     const positions=trackingReport&&(!currentReport||trackingReport.mode==='subway'||Date.parse(currentReport.reportedAt)<Date.parse(trackingReport.reportedAt))?
       [...current.filter(v=>v.trackingId!==trackingReport.trackingId),trackingReport]:current;
-    reports=vehicleReports(positions,predictions,now).filter(v=>modeEnabled(v.mode))
-      .map(v=>({...v,due:v.mode==='subway'&&trainIsDue(v,now)&&(v.motion||v.accuracy==='prediction-stop'||v.positionReport?.stopId===v.nextStop?.stopId)}));
+    reports=vehicleReports(positions,now).filter(v=>modeEnabled(v.mode))
+      .map(v=>({...v,due:Boolean(view==='subway'&&stationTrains.get(v.trackingId)?.has(v.nextStop?.stopId)&&trainIsDue(v,v.nextStop.stopId,now))}));
     const visible=displayedVehicles(reports,now),ids=new Set(visible.map(v=>v.id));
     for(const [id,marker] of markers)if(!ids.has(id)){layer.removeLayer(marker);markers.delete(id);}
     for(const v of visible){
@@ -137,7 +137,8 @@ export function attachVehicleMap({map,L,api,getRoute,onSelect,onSnapshot=()=>{}}
   async function refresh(){
     if(document.hidden||suspended||view==='bike')return;
     const modes=['bus','subway'].filter(modeEnabled);
-    if(!modes.length){clear();status.textContent='Vehicle layers hidden';return;}
+    control.querySelector('.vehicle-expand').hidden=!modes.length;
+    if(!modes.length){clear();status.textContent='Off';return;}
     const b=map.getBounds(),params=new URLSearchParams({bbox:[b.getWest(),b.getSouth(),b.getEast(),b.getNorth()].map(bound=>bound.toFixed(5)).join(','),modes:modes.join(',')});
     const route=getRoute(),lines=[...new Set(route?.legs.map(l=>l.line).filter(Boolean)||[])];
     const routeOnly=control.querySelector('[name="routeOnly"]');routeOnly.disabled=!lines.length;
@@ -166,12 +167,20 @@ export function attachVehicleMap({map,L,api,getRoute,onSelect,onSnapshot=()=>{}}
   setInterval(refresh,15000);setInterval(render,1000);refresh();
   return {refresh,
     setView(value){
-      view=value;line='';predictions=[];control.hidden=view!=='directions';
+      view=value;line='';stationTrains.clear();control.hidden=view!=='directions';
       document.body.classList.remove('vehicle-explore');control.querySelector('.vehicle-expand').textContent='Expand live map';
       clear();refresh();
     },
     setLine(value){line=value;clear();refresh();},
-    setStationPredictions(rows){predictions=rows;render();},
+    setStationPredictions(rows){
+      stationTrains=new Map();
+      for(const row of rows){
+        if(!row.trackingId||row.isNextStop===false)continue;
+        if(!stationTrains.has(row.trackingId))stationTrains.set(row.trackingId,new Set());
+        stationTrains.get(row.trackingId).add(platformID(row));
+      }
+      render();
+    },
     setSelectedTrip(id){selectedTrip=id;trackingReport=null;render();},
     setTrackingReport(report){trackingReport=report?.trackingId===selectedTrip?report:null;render();},
     findTrip(id){return reports.find(vehicle=>vehicle.trackingId===id);},

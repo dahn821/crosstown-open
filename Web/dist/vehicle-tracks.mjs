@@ -67,7 +67,8 @@ export function attachVehicleTracking({map,L,api,findTrip,onChange,onReport}){
       list.innerHTML=trip.stops.map((stop,index)=>{
         const time=Date.parse(stop.arrivalTime??stop.departureTime);
         const note=[index===0?'Next stop':null,Number.isFinite(time)?clock.format(time):null].filter(Boolean).join(' · ');
-        return `<li><span class="tracker-stop-dot" aria-hidden="true"></span><span><strong>${esc(stop.name)}</strong><small>${note}</small></span>${Number.isFinite(time)?liveTimeMarkup(stop):'<small>Awaiting report</small>'}</li>`;
+        const call={...stop,mode:trip.mode,trackingId:trip.id,stopId:stop.id,isNextStop:index===0};
+        return `<li><span class="tracker-stop-dot" aria-hidden="true"></span><span><strong>${esc(stop.name)}</strong><small>${note}</small></span>${Number.isFinite(time)?liveTimeMarkup(call,vehicle):'<small>Awaiting report</small>'}</li>`;
       }).join('');
       list.scrollTop=scroll;
     }
@@ -132,6 +133,6 @@ export function attachVehicleTracking({map,L,api,findTrip,onChange,onReport}){
   L.DomEvent.disableClickPropagation(panel);L.DomEvent.disableScrollPropagation(panel);
   document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});
   setInterval(refresh,15000);
-  setInterval(()=>{if(selected&&!document.hidden)updateLiveTimes(panel);},1000);
+  setInterval(()=>{if(selected&&!document.hidden)updateLiveTimes(panel,findTrip);},1000);
   return {select,close};
 }

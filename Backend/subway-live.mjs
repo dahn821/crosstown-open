@@ -1,5 +1,5 @@
 import {canceledTrip,findTripUpdate,indexTripUpdates,positionReportTime,trackingId} from './trip-reports.mjs';
-import {sampleTrack} from '../Web/dist/track-position.mjs';
+import {approachingWithinMinute,sampleTrack} from '../Web/dist/track-position.mjs';
 
 const feedsByStore=new WeakMap();
 const dwell=25000,maxAge=90000;
@@ -122,8 +122,8 @@ function firstCall(train,stop){
 export function trainPosition(store,train,positionReport,now){
   if(positionReport.accuracy==='gps')return {position:positionReport};
   const nextStop=firstCall(train,store.tripIndex.stops[train.target]);
-  if(nextStop)nextStop.due=train.arrivesAt<now+60000;
   const motion=train.motion;
+  if(nextStop)nextStop.due=approachingWithinMinute(motion,train.observedAt,now);
   const sample=motion&&sampleTrack(motion,now);
   const position=sample?{...positionReport,coordinate:sample.coordinate,accuracy:'interpolated',
     status:`Estimated toward ${positionReport.stopName}`}:positionReport;

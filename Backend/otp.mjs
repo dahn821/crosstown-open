@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
-import {subwayFeeds} from './feeds.mjs';
+import {busStopID,subwayFeeds} from './feeds.mjs';
 import {walkingPaces,walkingSpeed} from './walking.mjs';
 import {subwayOptions,predictionSnapshot} from './subway-options.mjs';
 import {classicCyclingSpeed,freshBikeStation,lowAssistPickup,lowAssistTrip,rentalDuration} from './citi-bike.mjs';
@@ -69,6 +69,16 @@ async function search(origin,destination,modes,p,instant,arriveBy=false,{cycling
 function isUnderground(stop){const structure=structures.get(placeId(stop).replace(/[NS]$/,''));return structure==null?1:structure==='Subway'?1:0;}
 function undergroundFraction(leg){const stops=(leg.stopCalls||[]).map(c=>c.stopLocation?.gtfsId).filter(Boolean);if(stops.length<2)return (isUnderground(leg.from.stop?.gtfsId)+isUnderground(leg.to.stop?.gtfsId))/2;let sum=0;for(let i=1;i<stops.length;i++)sum+=(isUnderground(stops[i-1])+isUnderground(stops[i]))/2;return sum/(stops.length-1);}
 
+function routeStopDetails(leg,mode,live,store){
+  const idFor=mode==='bus'?busStopID:placeId;
+  const names=new Map((leg.stopCalls||[]).flatMap(({stopLocation:stop})=>stop?.gtfsId&&stop.name?[[idFor(stop.gtfsId),stop.name]]:[]));
+  const ids=(live?.stopIds??leg.stopCalls?.map(call=>call.stopLocation?.gtfsId))?.map(idFor);
+  if(!ids||ids.length<2||ids.some(id=>!id)||ids[0]!==idFor(leg.from.stop?.gtfsId)||ids.at(-1)!==idFor(leg.to.stop?.gtfsId))return {};
+  const intermediateStops=ids.slice(1,-1).map(id=>({id,name:names.get(id)||
+    (mode==='subway'?store.tripIndex?.stops?.[id]?.name:store.busStops?.get(id)?.name)}));
+  return {stopCount:ids.length-1,...(intermediateStops.every(stop=>stop.name)?{intermediateStops}:{})};
+}
+
 // Work backwards from a real arrival deadline, then verify every connection forwards.
 // Subtract boarding/transfer slack before access legs so we never suggest a missed train.
 function latestStart(raw,request,store){
@@ -93,7 +103,7 @@ export function normalize(raw,request,store){
     if(!mode||!p.modes.includes(mode)||(mode==='bus'&&p.bikeSource==='ownBike'))return null;
     const line=l.route?.shortName,lowAssist=l.bikeRideType==='lowAssist';
     const rideSeconds=mode==='bike'&&l.rentedBike&&p.bikeSource==='citiBike'?rentalDuration(l,p):l.duration;
-    let wait=0,ride=rideSeconds/60,realtime=false,source='OpenStreetMap travel estimate',departure=clock,arrival=clock+rideSeconds*1000,bikePickup,bikeReturn,predictionReportedAt,tripId=l.trip?.gtfsId;
+    let wait=0,ride=rideSeconds/60,realtime=false,source='OpenStreetMap travel estimate',departure=clock,arrival=clock+rideSeconds*1000,bikePickup,bikeReturn,predictionReportedAt,tripId=l.trip?.gtfsId,stopDetails={};
     if(mode==='subway'||mode==='bus'){
       const ready=clock+(boardings>0?90000:45000)+(l.extraAccessMinutes||0)*60000;
       const live=backwards?backwards.connections.get(i):store.connection({line,tripId:l.pinnedTripId,fromStop:placeId(l.from.stop?.gtfsId),toStop:placeId(l.to.stop?.gtfsId),readyAt:ready,kind:mode});
@@ -106,6 +116,7 @@ export function normalize(raw,request,store){
         source=mode==='bus'&&!store.busKey?'MTA schedule · Bus Time key not connected':'MTA schedule · live prediction unavailable';allLive=false;
       }
       wait=(departure-clock)/60000;ride=(arrival-departure)/60000;boardings++;transitRides++;
+      stopDetails=routeStopDetails(l,mode,live,store);
       if(boardings===1)fare+=300;
       // Fare is an estimate: subway transfers stay in the paid system; a third bus boarding can cost another fare.
       if(boardings>2&&mode==='bus')fare+=300;
@@ -128,7 +139,9 @@ export function normalize(raw,request,store){
     const underground=mode==='subway'?ride*undergroundFraction(l)+wait*isUnderground(l.from.stop?.gtfsId):coveredTransfer?duration:0;
     const coordinates=l.coordinates|| (l.legGeometry?.points?decodePolyline(l.legGeometry.points):[from.coordinate,to.coordinate]);
     const stops = line ? {boardStopId:placeId(l.from.stop?.gtfsId),alightStopId:placeId(l.to.stop?.gtfsId)} : {};
-    legs.push({id:String(l.id||i)+'-'+mode,from,to,mode,line,tripId,...stops,duration,waitingMinutes:wait,setupMinutes:mode==='bike'&&l.rentedBike?2:0,outdoorMinutes:outdoor,undergroundMinutes:underground,instruction,coordinates,bikeSource:mode==='bike'?p.bikeSource:undefined,bikeRideType:l.bikeRideType,realtime,dataSource:source,predictionReportedAt,departureTime:new Date(departure).toISOString(),arrivalTime:new Date(arrival).toISOString(),routeColor:l.route?.color||null,bikePickup,bikeReturn,steps:l.steps||[]});
+    legs.push({id:String(l.id||i)+'-'+mode,from,to,mode,line,tripId,...stops,...stopDetails,duration,
+      distanceMeters:Number.isFinite(l.distance)&&l.distance>0?l.distance:undefined,headsign:l.headsign||undefined,
+      waitingMinutes:wait,setupMinutes:mode==='bike'&&l.rentedBike?2:0,outdoorMinutes:outdoor,undergroundMinutes:underground,instruction,coordinates,bikeSource:mode==='bike'?p.bikeSource:undefined,bikeRideType:l.bikeRideType,realtime,dataSource:source,predictionReportedAt,departureTime:new Date(departure).toISOString(),arrivalTime:new Date(arrival).toISOString(),routeColor:l.route?.color||null,bikePickup,bikeReturn,steps:l.steps||[]});
     clock=arrival;
   }
   const sum=(key,filter=()=>true)=>legs.filter(filter).reduce((v,l)=>v+l[key],0);

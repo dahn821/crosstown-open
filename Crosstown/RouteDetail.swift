@@ -8,104 +8,218 @@ struct RouteDetail: View {
     @State var isSaved: Bool
     let onSave: () -> Void
     let onRefresh: () async -> Void
-    let apiBaseURLString: String
     @State private var walkthrough = false
     @State private var refreshing = false
     @Environment(\.dismiss) private var dismiss
+
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    HStack { DataPill(); Spacer(); Text("YOUR ITINERARY").font(.system(size: 9, weight: .medium, design: .monospaced)).tracking(1).foregroundStyle(Theme.secondary) }
-                    Text(route.title).font(.system(size: 38, weight: .semibold)).tracking(-1.5)
-                    Text(route.explanation).font(.subheadline).foregroundStyle(Theme.secondary).lineSpacing(4)
-                    Text("Leave \(time(route.departureTime)) · arrive \(time(route.arrivalTime)) · checked \(time(route.generatedAt))")
-                        .font(.caption).foregroundStyle(Theme.secondary)
-                    Button(refreshing ? "Refreshing predictions…" : "Refresh this trip") {
-                        refreshing = true
-                        Task { await onRefresh(); refreshing = false }
-                    }.disabled(refreshing)
-                    HStack(spacing: 0) {
-                        metric(route.minutes.minuteText + " min", label: "Total time")
-                        metric(route.fareText, label: "Est. cost")
-                        metric(route.outdoorMinutes.minuteText + " min", label: "Outside")
-                    }.padding(.vertical, 18).background(.white, in: .rect(cornerRadius: 20))
-                    JourneyMap(route: route, origin: route.legs.first?.from, destination: route.legs.last?.to, apiBaseURLString: apiBaseURLString).frame(height: 210).clipShape(.rect(cornerRadius: 22))
-                    Text("The connection").font(.title3.weight(.semibold))
-                    VStack(spacing: 0) {
-                        ForEach(Array(route.legs.enumerated()), id: \.element.id) { index, leg in
-                            HStack(alignment: .top, spacing: 15) {
-                                VStack(spacing: 5) {
-                                    Image(systemName: leg.mode.symbol).font(.system(size: 17)).foregroundStyle(Theme.mode(leg.mode)).frame(width: 42, height: 42).background(.white, in: Circle())
-                                    if leg.id != route.legs.last?.id { Rectangle().fill(Theme.line).frame(width: 2, height: 48) }
-                                }
-                                VStack(alignment: .leading, spacing: 6) {
-                                    HStack(alignment: .top) {
-                                        Text(leg.instruction).font(.system(size: 15, weight: .semibold))
-                                        Spacer(minLength: 10)
-                                        Text(leg.duration.minuteText + " min").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.secondary)
-                                    }
-                                    if leg.mode == .subway || leg.mode == .bus {
-                                        Text("\(leg.realtime == true ? "Live prediction" : "Scheduled"): depart \(time(leg.departureTime)), arrive \(time(leg.arrivalTime))")
-                                            .font(.caption).foregroundStyle(leg.realtime == true ? Theme.green : Theme.secondary)
-                                        Text("Board at \(leg.from.name) · \(leg.waitingMinutes.minuteText) min wait after reaching the stop").font(.caption).foregroundStyle(Theme.secondary)
-                                        if let report = leg.predictionReportedAt { Text("MTA report \(time(report))").font(.caption2).foregroundStyle(Theme.secondary) }
-                                        if leg.mode == .subway {
-                                            DisclosureGroup("Choose a train") {
-                                                ForEach(departures(for: index)) { option in
-                                                    Button { onChooseDeparture(option) } label: {
-                                                        HStack {
-                                                            VStack(alignment: .leading, spacing: 4) {
-                                                                Text("\(option.legs[index].line ?? "Train") · \(time(option.legs[index].departureTime))")
-                                                                Text("Arrive \(time(option.arrivalTime)) · \(option.minutes.minuteText) min total").font(.caption).foregroundStyle(Theme.secondary)
-                                                            }
-                                                            Spacer()
-                                                            if option.choiceId == route.choiceId { Image(systemName: "checkmark.circle.fill") }
-                                                        }.padding(.vertical, 7)
-                                                    }.buttonStyle(.plain).accessibilityLabel("Take \(option.legs[index].line ?? "train") at \(time(option.legs[index].departureTime)), arrive \(time(option.arrivalTime))")
-                                                }
-                                                if departures(for: index).isEmpty { Text("Refresh this trip for current departures.").font(.caption).foregroundStyle(Theme.secondary) }
-                                            }.font(.subheadline).tint(Theme.blue)
-                                        }
-                                    }
-                                    if let pickup = leg.bikePickup, let dropoff = leg.bikeReturn {
-                                        let bikes = leg.bikeRideType == "lowAssist" ? "0 classic bikes · \(pickup.ebikes ?? 0) e-bikes" : "\(pickup.classicBikes ?? 0) classic bikes"
-                                        Text("\(bikes) at pickup · \(dropoff.docks) return docks now").font(.caption).foregroundStyle(Theme.green)
-                                        if leg.bikeRideType == "lowAssist" {
-                                            Text("Choose Low Assist in Citi Bike at unlock if offered. Bike counts can change.").font(.caption).foregroundStyle(Theme.secondary)
-                                        }
-                                    }
-                                    if leg.setupMinutes > 0 { Text("About \(max(0, leg.duration-leg.setupMinutes).minuteText) min riding + \(leg.setupMinutes.minuteText) min for pickup and return.").font(.caption).foregroundStyle(Theme.secondary) }
-                                    Text(leg.to.name).font(.caption).foregroundStyle(Theme.secondary)
-                                    if let steps = leg.steps, !steps.isEmpty {
-                                        DisclosureGroup("Street directions") {
-                                            ForEach(Array(steps.enumerated()), id: \.offset) { _, step in
-                                                Text("\(step.relativeDirection.replacingOccurrences(of: "_", with: " ").lowercased()) onto \(step.streetName) · \(Int(step.distance.rounded())) m\(step.walkingBike == true ? " · walk bike" : "")").font(.caption).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 3)
-                                            }
-                                        }.font(.caption).tint(Theme.blue)
-                                    }
-                                }.padding(.top, 6).padding(.bottom, 26)
+            VStack(spacing: 0) {
+                JourneyMap(route: route, origin: route.legs.first?.from, destination: route.legs.last?.to)
+                    .frame(height: 190)
+                    .accessibilityLabel("Map of the selected route")
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 13) {
+                        summary
+                        if let first = route.legs.first {
+                            endpoint("Start", name: first.from.name, timestamp: route.departureTime)
+                        }
+                        VStack(spacing: 0) {
+                            ForEach(Array(route.legs.enumerated()), id: \.offset) { index, leg in
+                                journeyLeg(leg, at: index)
                             }
                         }
-                    }
-                    Text("Street times are estimates. This leg guide does not track your location; refresh if you miss a connection.").font(.caption).foregroundStyle(Theme.secondary)
-                }.padding(24)
-            }.background(Theme.canvas).navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
-                    ToolbarItemGroup(placement: .primaryAction) {
-                        ShareLink(item: route.summary) { Image(systemName: "square.and.arrow.up") }.accessibilityLabel("Share itinerary")
-                        Button { onSave(); isSaved.toggle() } label: { Image(systemName: isSaved ? "bookmark.fill" : "bookmark") }.accessibilityLabel(isSaved ? "Remove saved route" : "Save route")
-                    }
+                        if let last = route.legs.last {
+                            endpoint("Destination", name: last.to.name, timestamp: route.arrivalTime)
+                        }
+                        Text("Checked \(time(route.generatedAt))").font(.caption).foregroundStyle(Theme.secondary)
+                    }.padding(18)
                 }
-                .safeAreaInset(edge: .bottom) {
-                    Button { walkthrough = true } label: { Label("Step-by-step", systemImage: "arrow.right").font(.system(size: 16, weight: .semibold)).frame(maxWidth: .infinity).frame(height: 55) }
-                        .buttonStyle(.borderedProminent).buttonBorderShape(.roundedRectangle(radius: 18)).padding(.horizontal, 24).padding(.vertical, 12).background(Theme.canvas)
+            }
+            .background(.white)
+            .navigationTitle("Route overview").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button {
+                        refreshing = true
+                        Task { await onRefresh(); refreshing = false }
+                    } label: { Image(systemName: "arrow.clockwise") }
+                        .disabled(refreshing).accessibilityLabel("Refresh this trip")
+                    ShareLink(item: route.summary) { Image(systemName: "square.and.arrow.up") }
+                        .accessibilityLabel("Share itinerary")
                 }
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                HStack(spacing: 10) {
+                    Button { walkthrough = true } label: { Label("Step-by-step", systemImage: "arrow.right") }
+                        .buttonStyle(.borderedProminent).tint(Theme.green)
+                    Button { onSave(); isSaved.toggle() } label: {
+                        Label(isSaved ? "Saved" : "Save", systemImage: isSaved ? "bookmark.fill" : "bookmark")
+                    }.buttonStyle(.bordered).tint(Theme.green)
+                    Spacer(minLength: 0)
+                }.controlSize(.large).padding(.horizontal, 18).padding(.vertical, 8)
+                    .frame(maxWidth: .infinity).background(.regularMaterial)
+            }
         }.sheet(isPresented: $walkthrough) { TripWalkthrough(route: route) }.presentationDragIndicator(.visible)
     }
-    private func metric(_ value: String, label: String) -> some View {
-        VStack(spacing: 5) { Text(value).font(.system(size: 21, weight: .semibold)).minimumScaleFactor(0.7).lineLimit(1); Text(label).font(.system(size: 11)).foregroundStyle(Theme.secondary) }.frame(maxWidth: .infinity)
+
+    private var summary: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(route.minutes.minuteText + " min").font(.largeTitle.bold()).accessibilityAddTraits(.isHeader)
+            Text("Arrive \(time(route.arrivalTime)) · \(route.fareText) est. · \(route.outdoorMinutes.minuteText) min outside")
+                .font(.subheadline).foregroundStyle(Theme.secondary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 7) {
+                    ForEach(Array(route.legs.enumerated()), id: \.offset) { index, leg in
+                        if index > 0 {
+                            Image(systemName: "chevron.right").font(.caption2.bold()).foregroundStyle(Theme.secondary)
+                        }
+                        HStack(spacing: 4) {
+                            if let line = leg.line { serviceBadge(leg, line: line) }
+                            else { Label(leg.duration.minuteText + " min", systemImage: leg.mode.symbol).font(.caption.bold()) }
+                        }.padding(4).background(Theme.canvas, in: .rect(cornerRadius: 7))
+                    }
+                }
+            }.accessibilityLabel(route.title)
+        }
+    }
+
+    private func endpoint(_ label: String, name: String, timestamp: String?) -> some View {
+        HStack(spacing: 11) {
+            Image(systemName: "smallcircle.filled.circle").font(.title3).foregroundStyle(Theme.green)
+                .frame(width: 29).accessibilityHidden(true)
+            timelineStop(label, name: name, timestamp: timestamp)
+        }
+    }
+
+    private func timelineStop(_ label: String, name: String, timestamp: String?) -> some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(label).font(.caption).foregroundStyle(Theme.secondary)
+                Text(name).font(.subheadline.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 5)
+            Text(time(timestamp)).font(.caption.weight(.semibold)).monospacedDigit().fixedSize()
+        }
+    }
+
+    private func legColor(_ leg: RouteLeg) -> Color {
+        if let line = leg.line, leg.mode == .subway { return SubwayBadge.color(line, reported: leg.routeColor) }
+        return Theme.mode(leg.mode)
+    }
+
+    @ViewBuilder private func serviceBadge(_ leg: RouteLeg, line: String) -> some View {
+        if leg.mode == .subway {
+            SubwayBadge(line: line, reportedColor: leg.routeColor, size: 20)
+        } else {
+            Text(line).font(.caption2.bold()).padding(.horizontal, 6).padding(.vertical, 3)
+                .background(legColor(leg), in: .rect(cornerRadius: 5)).foregroundStyle(.white)
+        }
+    }
+
+    private func journeyLeg(_ leg: RouteLeg, at index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if leg.mode == .subway || leg.mode == .bus {
+                transitLeg(leg, at: index)
+            } else {
+                streetLeg(leg)
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 11)
+            .overlay(alignment: .top) { Rectangle().fill(Theme.line).frame(height: 1) }
+            .padding(.leading, 40)
+            .overlay(alignment: .leading) {
+                Color.clear.frame(width: 30)
+                .overlay {
+                    if leg.mode == .walk {
+                        Canvas { context, size in
+                            for y in stride(from: 5.0, to: size.height, by: 11.0) {
+                                let dot = CGRect(x: size.width / 2 - 2.5, y: y, width: 5, height: 5)
+                                context.fill(Path(ellipseIn: dot), with: .color(Theme.secondary.opacity(0.7)))
+                            }
+                        }
+                    } else {
+                        Capsule().fill(legColor(leg)).frame(width: 5)
+                    }
+                }
+                .overlay(alignment: .top) {
+                    Image(systemName: leg.mode.symbol).font(.caption.bold()).foregroundStyle(legColor(leg))
+                        .frame(width: 27, height: 27).background(.white, in: .rect(cornerRadius: 8))
+                        .overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.line) }.padding(.top, 9)
+                }.accessibilityHidden(true)
+            }
+    }
+
+    @ViewBuilder private func transitLeg(_ leg: RouteLeg, at index: Int) -> some View {
+        let runtime = max(0, leg.duration - leg.waitingMinutes).minuteText + " min ride"
+        timelineStop("Board at", name: leg.from.name, timestamp: leg.departureTime)
+        HStack(spacing: 6) {
+            if let line = leg.line { serviceBadge(leg, line: line) }
+            Text(leg.headsign.map { "Toward \($0)" } ?? runtime).font(.subheadline)
+        }
+        Text((leg.realtime == true ? "Live departure" : "Scheduled departure")
+             + (leg.waitingMinutes >= 1 ? " · \(leg.waitingMinutes.minuteText) min wait" : ""))
+            .font(.caption).foregroundStyle(leg.realtime == true ? Theme.green : Theme.secondary)
+        if leg.mode == .subway {
+            let options = departures(for: index)
+            if !options.isEmpty {
+                DisclosureGroup("Choose a train") {
+                    ForEach(options) { option in
+                        Button { onChooseDeparture(option) } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("\(option.legs[index].line ?? "Train") · \(time(option.legs[index].departureTime))")
+                                    Text("Arrive \(time(option.arrivalTime)) · \(option.minutes.minuteText) min total")
+                                        .font(.caption).foregroundStyle(Theme.secondary)
+                                }
+                                Spacer()
+                                if option.choiceId == route.choiceId { Image(systemName: "checkmark.circle.fill") }
+                            }.padding(.vertical, 6)
+                        }.buttonStyle(.plain)
+                    }
+                }.font(.subheadline)
+            }
+        }
+        if let count = leg.stopCount {
+            let label = "\(count) \(count == 1 ? "stop" : "stops") · \(runtime)"
+            if let stops = leg.intermediateStops, !stops.isEmpty {
+                DisclosureGroup(label) {
+                    ForEach(Array(stops.enumerated()), id: \.offset) { _, stop in
+                        Label(stop.name, systemImage: "circle").font(.caption)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
+                    }
+                }.font(.subheadline)
+            } else {
+                Text(label).font(.caption).foregroundStyle(Theme.secondary)
+            }
+        }
+        timelineStop("Get off at", name: leg.to.name, timestamp: leg.arrivalTime)
+    }
+
+    @ViewBuilder private func streetLeg(_ leg: RouteLeg) -> some View {
+        let distance = leg.distanceMeters.flatMap { $0 >= 80 ? ($0 / 1609.344).formatted(.number.precision(.fractionLength(1))) + " mi" : nil }
+        Text([leg.duration.minuteText + " min", distance].compactMap { $0 }.joined(separator: " · "))
+            .font(.caption).foregroundStyle(Theme.secondary)
+        Text(leg.instruction).font(.subheadline.weight(.semibold))
+        if let pickup = leg.bikePickup, let dropoff = leg.bikeReturn {
+            let bikes = leg.bikeRideType == "lowAssist" ? "0 classic bikes · \(pickup.ebikes ?? 0) e-bikes" : "\(pickup.classicBikes ?? 0) classic bikes"
+            Text("\(bikes) · \(dropoff.docks) return docks when checked").font(.caption).foregroundStyle(Theme.green)
+            if leg.bikeRideType == "lowAssist" {
+                Text("Choose Low Assist at unlock if Citi Bike offers it.").font(.caption).foregroundStyle(Theme.secondary)
+            }
+        }
+        if leg.setupMinutes > 0 {
+            Text("Includes \(leg.setupMinutes.minuteText) min for pickup and return.").font(.caption).foregroundStyle(Theme.secondary)
+        }
+        if let steps = leg.steps, !steps.isEmpty {
+            DisclosureGroup("Street directions") {
+                ForEach(Array(steps.enumerated()), id: \.offset) { _, step in
+                    Text("\(step.relativeDirection.replacingOccurrences(of: "_", with: " ").lowercased()) onto \(step.streetName) · \(Int(step.distance.rounded())) m\(step.walkingBike == true ? " · walk bike" : "")")
+                        .font(.caption).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 3)
+                }
+            }.font(.subheadline)
+        }
     }
     private func departures(for index: Int) -> [Itinerary] {
         var seen = Set<String>()

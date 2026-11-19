@@ -26,7 +26,10 @@ export function transitousItinerary(itinerary){
     if(['SUBWAY','BUS'].includes(mode)&&(!mtaStop(leg.from)||!mtaStop(leg.to)||!leg.routeShortName))return null;
     const coordinates=decodeGeometry(leg.legGeometry?.points||'',leg.legGeometry?.precision??6);
     if(coordinates.length<2)return null;
-    legs.push({id:leg.tripId||String(legs.length),mode,duration:leg.duration,distance:leg.distance,from:rawPlace(leg.from),to:rawPlace(leg.to),route:leg.routeShortName?{shortName:leg.routeShortName,gtfsId:leg.routeId,color:leg.routeColor}:undefined,trip:leg.tripId?{gtfsId:leg.tripId}:undefined,headsign:leg.headsign||'',start:{scheduledTime:leg.scheduledStartTime||leg.startTime},end:{scheduledTime:leg.scheduledEndTime||leg.endTime},coordinates,stopCalls:[leg.from,...leg.intermediateStops||[],leg.to].flatMap(stop=>mtaStop(stop)?[{stopLocation:{gtfsId:mtaStop(stop)}}]:[]),steps:(leg.steps||[]).map(step=>{const point=decodeGeometry(step.polyline?.points||'',step.polyline?.precision??6)[0]||coordinates[0];return {distance:step.distance,relativeDirection:step.relativeDirection||'CONTINUE',absoluteDirection:step.absoluteDirection||'',streetName:step.streetName||'path',walkingBike:mode==='BICYCLE'&&step.walkingBike===true,lat:point.latitude,lon:point.longitude};})});
+    const stopCalls=Array.isArray(leg.intermediateStops)?[leg.from,...leg.intermediateStops,leg.to].map(stop=>({
+      stopLocation:{gtfsId:mtaStop(stop),name:stop.name}
+    })):undefined;
+    legs.push({id:leg.tripId||String(legs.length),mode,duration:leg.duration,distance:leg.distance,from:rawPlace(leg.from),to:rawPlace(leg.to),route:leg.routeShortName?{shortName:leg.routeShortName,gtfsId:leg.routeId,color:leg.routeColor}:undefined,trip:leg.tripId?{gtfsId:leg.tripId}:undefined,headsign:leg.headsign||'',start:{scheduledTime:leg.scheduledStartTime||leg.startTime},end:{scheduledTime:leg.scheduledEndTime||leg.endTime},coordinates,stopCalls,steps:(leg.steps||[]).map(step=>{const point=decodeGeometry(step.polyline?.points||'',step.polyline?.precision??6)[0]||coordinates[0];return {distance:step.distance,relativeDirection:step.relativeDirection||'CONTINUE',absoluteDirection:step.absoluteDirection||'',streetName:step.streetName||'path',walkingBike:mode==='BICYCLE'&&step.walkingBike===true,lat:point.latitude,lon:point.longitude};})});
   }
   return legs.length?{legs}:null;
 }

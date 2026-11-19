@@ -25,7 +25,17 @@ final class AppModel {
         Place(id: "penn", name: "Penn Station", neighborhood: "Midtown West", coordinate: .init(40.7505, -73.9934)),
         Place(id: "ues", name: "96 St & Lexington Ave", neighborhood: "Upper East Side", coordinate: .init(40.7850, -73.9518))
     ]
-    var apiBaseURLString = UserDefaults.standard.string(forKey: "crosstown.server.v2") ?? "http://127.0.0.1:4173"
+    var apiBaseURLString = AppModel.startupServer()
+    private static func startupServer() -> String {
+        let saved = UserDefaults.standard.string(forKey: "crosstown.server.v2")
+        #if targetEnvironment(simulator)
+        return saved ?? "http://127.0.0.1:4173"
+        #else
+        if let saved, let host = URL(string: saved)?.host,
+           !["localhost", "127.0.0.1", "::1", "[::1]"].contains(host) { return saved }
+        return "https://crosstown-nyc.netlify.app"
+        #endif
+    }
     var health: LiveHealth?
     var request = PlanRequest()
     var response: PlanResponse?

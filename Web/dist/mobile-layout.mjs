@@ -5,12 +5,15 @@ export function attachMobileLayout({map,onFit}){
   const mapToggle=document.querySelector('[data-action="map-view"]');
   let snap='peek',drag,ignoreClick=false;
   function points(){
-    const safe=parseFloat(getComputedStyle(card).paddingBottom)||0;
+    const style=getComputedStyle(card),safe=parseFloat(style.paddingBottom)||0;
+    const bottom=parseFloat(style.bottom)||0;
     const navigation=card.dataset.content==='navigation';
-    const top=document.querySelector(navigation?'#navigation-prompt':'.search-card').getBoundingClientRect().bottom+12;
-    const full=Math.max(200,innerHeight-top);
-    const peek=navigation?152:card.dataset.content==='preview'?186:128;
-    return {peek:peek+safe,half:Math.min(full,Math.max(280,innerHeight*.43)),full};
+    const preview=card.dataset.content==='preview';
+    const top=preview?Math.max(78,innerHeight*.12):
+      document.querySelector(navigation?'#navigation-prompt':'.search-card').getBoundingClientRect().bottom+12;
+    const full=Math.max(200,innerHeight-top-bottom);
+    const peek=navigation?152:preview?222:128;
+    return {peek:peek+safe,half:Math.min(full,Math.max(280,innerHeight*(preview ? .49 : .43))),full};
   }
   function setSnap(value){
     snap=value;card.dataset.sheetState=value;card.classList.remove('collapsed');
@@ -63,10 +66,12 @@ export function attachMobileLayout({map,onFit}){
   }).observe(card);
   const resize=()=>setSnap(snap);media.addEventListener('change',resize);window.addEventListener('resize',resize);
   setSnap('peek');
-  return {showRoutes:()=>{if(media.matches)setSnap('half');},showNavigation:()=>{if(media.matches)setSnap('peek');},resizeJourney(){if(media.matches)setSnap(snap==='full'?'half':'full');},fitPadding(){
+  return {showRoutes:()=>{if(media.matches)setSnap('half');},showMap:()=>{if(media.matches)setSnap('peek');},showNavigation:()=>{if(media.matches)setSnap('peek');},resizeJourney(){if(media.matches)setSnap(snap==='full'?'half':'full');},fitPadding(){
     if(!media.matches)return {paddingTopLeft:[430,95],paddingBottomRight:[65,85]};
     if(snap==='full')setSnap('peek');
-    const top=document.querySelector(card.dataset.content==='navigation'?'#navigation-prompt':'.search-card').getBoundingClientRect().bottom;
-    return {paddingTopLeft:[24,top+20],paddingBottomRight:[65,points()[snap]+24]};
+    const top=card.dataset.content==='preview'?44:
+      document.querySelector(card.dataset.content==='navigation'?'#navigation-prompt':'.search-card').getBoundingClientRect().bottom;
+    const bottom=parseFloat(getComputedStyle(card).bottom)||0;
+    return {paddingTopLeft:[24,top+20],paddingBottomRight:[65,points()[snap]+bottom+24]};
   }};
 }

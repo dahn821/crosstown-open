@@ -117,6 +117,7 @@ struct TransitBoard: View {
     @State private var selectedStop: String?
     @State private var selectedLine = ""
     @State private var availableLines = Set<String>()
+    @State private var observedTrains: [String: LiveVehicle] = [:]
 
     private var near: Coordinate { focus?.coordinate ?? center ?? model.origin?.coordinate ?? Coordinate(40.7505, -73.9934) }
     private var arrivals: [TransitDeparture] {
@@ -149,7 +150,13 @@ struct TransitBoard: View {
                            if center != next { focus = nil; selectedStop = nil }
                            center = next
                        },
-                       onStop: { id, name, coordinate in focus = Place(id: id, name: name, neighborhood: "New York City", coordinate: coordinate) })
+                       onStop: { id, name, coordinate in focus = Place(id: id, name: name, neighborhood: "New York City", coordinate: coordinate) },
+                       onVehicleReports: { rows in
+                           if mode == .subway {
+                               observedTrains = Dictionary(rows.compactMap { row in row.trackingId.map { ($0, row) } },
+                                                           uniquingKeysWith: { $0.reportedDate > $1.reportedDate ? $0 : $1 })
+                           }
+                       })
                 .frame(minHeight: 230, maxHeight: .infinity)
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 8) {
@@ -263,7 +270,7 @@ struct TransitBoard: View {
             }
             Spacer(minLength: 4)
             VStack(alignment: .trailing, spacing: 5) {
-                Text(TransitArrival.label(arrival: departure.arrivalTime, departure: departure.departureTime, now: now)).font(.headline).foregroundStyle(Theme.green)
+                Text(countdown(departure, at: now)).font(.headline).foregroundStyle(Theme.green)
                 Text(transitClock(departure.arrivalTime ?? departure.departureTime)).font(.caption).foregroundStyle(Theme.secondary)
             }
         }.padding(.vertical, 8)
@@ -289,7 +296,7 @@ struct TransitBoard: View {
                             ForEach(displayedTrains(groups[direction] ?? [])) { departure in
                                 HStack(spacing: 4) {
                                     SubwayBadge(line: departure.line, reportedColor: departure.routeColor, size: 18)
-                                    Text(TransitArrival.label(arrival: departure.arrivalTime, departure: departure.departureTime, now: now)).font(.caption).monospacedDigit()
+                                    Text(countdown(departure, at: now)).font(.caption).monospacedDigit()
                                 }.padding(.horizontal, 5).padding(.vertical, 3)
                                     .background(.white, in: Capsule())
                             }
@@ -335,6 +342,9 @@ struct TransitBoard: View {
         if focus != nil { return Array(arrivals.prefix(12)) }
         var seen = Set<String>()
         return Array(arrivals.filter { seen.insert($0.line).inserted }.prefix(4))
+    }
+    private func countdown(_ departure: TransitDeparture, at time: Date) -> String {
+        departure.countdown(vehicle: departure.trackingId.flatMap { observedTrains[$0] }, now: time)
     }
     private func refresh() async {
         guard let url = URL(string: model.apiBaseURLString) else { return }

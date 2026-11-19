@@ -113,7 +113,7 @@ function drawRoute(fit=true){
  if(r){
   for(const [index,leg] of r.legs.entries()){
    const walk=leg.mode==='walk',completed=journey?.navigator&&index<(journey.stepIndex??0);
-   const color=leg.mode==='bike'?'#2d5bff':leg.mode==='subway'?(/^[0-9a-f]{6}$/i.test(leg.routeColor)?'#'+leg.routeColor:'#25815f'):leg.mode==='bus'?'#3678c7':'#496d88';
+   const color=legColor(leg);
    const points=leg.coordinates.map(point=>[point.latitude,point.longitude]);
    const weight=journey?(walk?4:7):(walk?3:5);
    const className=journey?'selected-journey-line':'trip-line';
@@ -164,18 +164,48 @@ function journeyView(mode){
  $('#navigation-prompt').hidden=!isNavigation;
 }
 
+const legColor=leg=>leg.mode==='subway'&&/^[0-9a-f]{6}$/i.test(leg.routeColor)?'#'+leg.routeColor:
+  ({walk:'#526a7b',subway:'#25815f',bus:'#2967a2',bike:'#3455bb'})[leg.mode];
+
+function journeyEndpoint(label,name,time){
+ return `<div class="journey-endpoint"><i aria-hidden="true"></i><div><small>${label}</small><strong>${esc(name)}</strong></div><time datetime="${esc(time)}">${clock(time)}</time></div>`;
+}
+
 function journeyLeg(r,leg,index){
  const ride=leg.mode==='subway'||leg.mode==='bus';
- const predictions=ride?`<p class="${leg.realtime?'live-note':''}">${leg.realtime?'Live prediction':'Scheduled'} · ${clock(leg.departureTime)} to ${clock(leg.arrivalTime)}</p><p>Board at ${esc(leg.from.name)} · ${mins(leg.waitingMinutes)} min wait${leg.predictionReportedAt?` · MTA report ${clock(leg.predictionReportedAt)}`:''}</p>`:'';
+ const duration=mins(ride?Math.max(0,leg.duration-leg.waitingMinutes):leg.duration);
+ const distance=leg.distanceMeters>=80?' · '+(leg.distanceMeters/1609.344).toFixed(1)+' mi':'';
+ const fit=`<button class="journey-button journey-fit-leg" data-journey-leg="${index}" aria-label="Show this leg on the map">${icon('locate')}</button>`;
+ const rail=`<span class="journey-rail" aria-hidden="true"><b>${icon(leg.mode)}</b></span>`;
+ const count=leg.stopCount?leg.stopCount+(leg.stopCount===1?' stop':' stops'):'';
+ const stops=leg.intermediateStops?.length?`<details><summary>${count} · ${duration} min ride</summary><ol>${leg.intermediateStops.map(stop=>`<li>${esc(stop.name)}</li>`).join('')}</ol></details>`:
+   count?`<p>${count}</p>`:'';
+ if(ride)return `<li class="journey-segment transit" style="--leg-color:${legColor(leg)}">${rail}<div class="journey-segment-body">
+   <div class="journey-step"><div><small>Board at</small><strong>${esc(leg.from.name)}</strong></div><time datetime="${esc(leg.departureTime)}">${clock(leg.departureTime)}</time></div>
+   <div class="journey-service">${lineBadges({...leg,lineOptions:null})}<span>${leg.headsign?'Toward '+esc(leg.headsign):duration+' min ride'}</span>${fit}</div>
+   <p class="${leg.realtime?'live-note':''}">${leg.realtime?'Live departure':'Scheduled departure'}${leg.waitingMinutes>=1?' · '+mins(leg.waitingMinutes)+' min wait':''}</p>
+   ${leg.mode==='subway'?trainChoices(r,index):''}${stops}
+   <div class="journey-step journey-exit"><div><small>Get off at</small><strong>${esc(leg.to.name)}</strong></div><time datetime="${esc(leg.arrivalTime)}">${clock(leg.arrivalTime)}</time></div>
+   </div></li>`;
  const lowAssist=leg.bikeRideType==='lowAssist';
  const docks=leg.bikePickup?`<p class="live-note">${lowAssist?`0 classic bikes · ${leg.bikePickup.ebikes} e-bikes`:`${leg.bikePickup.classicBikes} classic bikes`} · ${leg.bikeReturn.docks} return docks when checked</p>${lowAssist?'<p>Choose Low Assist at unlock if Citi Bike offers it. Bike counts can change.</p>':''}`:'';
- const setup=leg.setupMinutes>0?`<p>About ${mins(Math.max(0,leg.duration-leg.setupMinutes))} min riding + ${mins(leg.setupMinutes)} min for pickup and return.</p>`:'';
+ const setup=leg.setupMinutes>0?`<p>Includes ${mins(leg.setupMinutes)} min for pickup and return.</p>`:'';
  const steps=(leg.steps||[]).filter(step=>step.distance>5);
  const directions=steps.length?`<details><summary>Street directions</summary><ol>${steps.map(step=>{
   const turn=step.relativeDirection==='DEPART'?step.absoluteDirection:step.relativeDirection;
   return `<li>${esc(turn).replaceAll('_',' ').toLowerCase()} onto ${esc(step.streetName)} · ${Math.round(step.distance)} m${step.walkingBike?' · walk bike':''}</li>`;
  }).join('')}</ol></details>`:'';
- return `<div class="timeline-leg"><div class="timeline-icon">${icon(leg.mode)}</div><div class="timeline-content"><div><strong>${esc(leg.instruction)}</strong><small>${mins(leg.duration)} min</small></div>${predictions}${leg.mode==='subway'?trainChoices(r,index):''}${docks}${setup}<p>${esc(leg.to.name)}</p>${directions}</div></div>`;
+ return `<li class="journey-segment ${leg.mode}" style="--leg-color:${legColor(leg)}">${rail}<div class="journey-segment-body">
+   <div class="journey-step"><div><small>${duration} min${distance}</small><strong>${esc(leg.instruction)}</strong></div>${fit}</div>
+   ${docks}${setup}${directions}</div></li>`;
+}
+
+function fitJourneyLeg(index){
+ const leg=state.journey?.route?.legs[index];
+ if(!leg?.coordinates?.length)return;
+ mobileLayout.showMap();
+ const bounds=L.latLngBounds(leg.coordinates.map(point=>[point.latitude,point.longitude]));
+ map.fitBounds(bounds,{...mobileLayout.fitPadding(),maxZoom:17,animate:!matchMedia('(prefers-reduced-motion:reduce)').matches});
 }
 
 function detail(route,{focus=false,expand=false}={}){
@@ -184,10 +214,20 @@ function detail(route,{focus=false,expand=false}={}){
  state.journey??={};
  state.journey.route=route;
  journeyView('preview');
- const toolbar=[['refresh-detail','Refresh this trip','refresh'],['save','Save this trip','bookmark'],['share','Share this route','share'],['journey-size','Resize journey outline','chevron']];
+ const toolbar=[['refresh-detail','Refresh this trip','refresh'],['journey-size','Resize journey outline','chevron']];
+ const first=route.legs[0],last=route.legs.at(-1),modes=route.legs.map(leg=>`<span class="journey-mode">${leg.line?lineBadges(leg):icon(leg.mode)}${leg.line?'':`<b>${mins(leg.duration)} min</b>`}</span>`).join(`<span class="journey-mode-arrow" aria-hidden="true">${icon('chevron')}</span>`);
  preview.innerHTML=`<header class="journey-header"><button class="journey-button" data-action="journey-back" aria-label="Back to routes">${icon('back')} Routes</button><div class="journey-actions">${toolbar.map(([action,label,symbol])=>`<button class="journey-button ${action==='journey-size'?'journey-resize':''}" data-action="${action}" aria-label="${label}">${icon(symbol)}</button>`).join('')}</div></header>
-  <div class="journey-summary"><div><h2 id="journey-title" tabindex="-1">${mins(route.minutes)} min <time datetime="${esc(route.arrivalTime)}">Arrive ${clock(route.arrivalTime)}</time></h2><p>${esc(routeTitle(route))} · ${money(route.fareCents)} est. · ${mins(route.outdoorMinutes)} min outside</p></div><button class="primary" data-action="navigate" aria-label="Start navigation">${icon('navigate')} Start</button></div>
-  <div class="journey-outline" tabindex="0" aria-label="Journey outline"><h3>Journey outline</h3><div class="timeline">${route.legs.map((leg,index)=>journeyLeg(route,leg,index)).join('')}</div><p class="hint">${route.legs.some(leg=>leg.bikePickup)?`${esc(route.fareAssumption)}. `:''}Checked ${clock(route.generatedAt)}.</p></div>`;
+  <div class="journey-summary"><h2 id="journey-title" tabindex="-1">${mins(route.minutes)} min</h2>
+  <p><time datetime="${esc(route.arrivalTime)}">Arrive ${clock(route.arrivalTime)}</time> · ${money(route.fareCents)} est. · ${mins(route.outdoorMinutes)} min outside</p>
+  <div class="journey-modes" aria-label="${esc(routeTitle(route))}">${modes}</div></div>
+  <div class="journey-outline" tabindex="0" aria-label="Journey outline"><h3 class="visually-hidden">Journey outline</h3>
+  ${first?journeyEndpoint('Start',first.from.name,route.departureTime):''}
+  <ol class="journey-timeline">${route.legs.map((leg,index)=>journeyLeg(route,leg,index)).join('')}</ol>
+  ${last?journeyEndpoint('Destination',last.to.name,route.arrivalTime):''}
+  <p class="hint">${route.legs.some(leg=>leg.bikePickup)?`${esc(route.fareAssumption)}. `:''}Checked ${clock(route.generatedAt)}.</p></div>
+  <footer class="journey-footer"><button class="primary" data-action="navigate" aria-label="Start navigation">${icon('navigate')} Start</button>
+    <button class="journey-button" data-action="save" aria-label="Save this trip">${icon('bookmark')} Save</button>
+    <button class="journey-button" data-action="share" aria-label="Share this route">${icon('share')} Share</button></footer>`;
  $('.journey-outline',preview).scrollTop=expand?0:scroll;
  if(expand)mobileLayout.showRoutes();
  drawRoute(expand);
@@ -425,6 +465,7 @@ document.addEventListener('click',event=>{
  if(b.dataset.place){choosePlace(b.dataset.place);return;}
  if(b.dataset.selectPlace!=null){const p=state.places[Number(b.dataset.selectPlace)],key=state.modal.endpoint,other=key==='origin'?'destination':'origin';if(key==='origin'){currentLocation.cancel();state.location={status:'idle'};}if(state[other]?.id===p.id)[state.origin,state.destination]=[state.destination,state.origin];else state[key]=p;sheet.close();state.modal=null;planTrip();return;}
  if(b.dataset.route!=null){state.selected=Number(b.dataset.route);renderRoutes();detail(currentRoutes()[state.selected],{focus:true,expand:true});return;}
+ if(b.dataset.journeyLeg!=null){fitJourneyLeg(Number(b.dataset.journeyLeg));return;}
  if(b.dataset.saved!=null){setMainView('directions');currentLocation.cancel();state.location={status:'idle'};const s=state.saved[Number(b.dataset.saved)];state.origin=s.origin;state.destination=s.destination;state.preferences={...defaults(),...s.preferences,...bikePaces(state.preferences)};state.timing={mode:'now',time:null};sheet.close();state.modal=null;if(state.origin.id===CURRENT_LOCATION_ID)useCurrentLocation();else planTrip();return;}
  if(b.dataset.removeSaved!=null){state.saved.splice(Number(b.dataset.removeSaved),1);try{localStorage.setItem('crosstown.saved.v2',JSON.stringify(state.saved));savedTrips();}catch{toast('Couldn’t update saved trips.');}return;}
  switch(b.dataset.action){
@@ -463,6 +504,6 @@ function openLinkedBikePaces(){
 }
 openLinkedBikePaces();
 window.addEventListener('hashchange',openLinkedBikePaces);
-try{const [d,health]=await Promise.all([api('/places'),api('/health?feeds=0')]);state.places=d.places;state.health=health;if(health.router.mode==='community')map.attributionControl.addAttribution('<a href="https://transitous.org/sources/" target="_blank" rel="noopener">Transitous</a>');else state.destination??=d.places.find(p=>p.id==='ues')??d.places[1];renderRoutes();if(new URLSearchParams(location.search).get('setup')==='bus-time'&&state.health.localSetupAvailable)busSetup();await planTrip();}catch(e){state.loading=false;state.error=e.message;renderRoutes();}
+try{const [d,health]=await Promise.all([api('/places'),api('/health?feeds=0')]);state.places=d.places;state.health=health;if(health.router.mode==='community'){app.dataset.hosted='true';map.attributionControl.addAttribution('<a href="https://transitous.org/sources/" target="_blank" rel="noopener">Transitous</a>');}else state.destination??=d.places.find(p=>p.id==='ues')??d.places[1];renderRoutes();if(new URLSearchParams(location.search).get('setup')==='bus-time'&&state.health.localSetupAvailable)busSetup();await planTrip();}catch(e){state.loading=false;state.error=e.message;renderRoutes();}
 setInterval(()=>{updateFreshness();if(document.hidden)return;if(state.mainView==='directions'&&state.health?.router?.ready&&state.health.router.mode!=='community'&&!sheet.open&&!state.journey&&!state.loading&&state.origin)refreshTrip({quiet:true});},30000);
 window.addEventListener('resize',()=>{map?.invalidateSize();drawRoute(false);});

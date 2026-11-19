@@ -1,3 +1,9 @@
+export function approachingWithinMinute(motion,observedAt,now){
+  const observedAge=now-observedAt,remaining=motion?.arrivesAt-now;
+  return observedAge>=-30000&&observedAge<60000&&remaining>0&&remaining<60000&&
+    motion.startedAt<=now&&motion.expiresAt>=now&&motion.points?.length>=2;
+}
+
 export function sampleTrack({points,startedAt,arrivesAt,expiresAt},now){
   if(now>expiresAt||arrivesAt<=startedAt||points.length<2)return null;
   const part=Math.max(0,Math.min(1,(now-startedAt)/(arrivesAt-startedAt)));

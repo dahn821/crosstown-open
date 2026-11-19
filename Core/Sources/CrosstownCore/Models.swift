@@ -94,7 +94,12 @@ public struct RouteLeg: Codable, Identifiable, Sendable {
     public var mode: TravelMode
     public var line: String?
     public var tripId: String? = nil
+    public var routeColor: String? = nil
     public var lineOptions: [TransitLineOption]? = nil
+    public var distanceMeters: Double? = nil
+    public var headsign: String? = nil
+    public var stopCount: Int? = nil
+    public var intermediateStops: [RouteStop]? = nil
     public var duration: Double
     public var waitingMinutes: Double
     public var setupMinutes: Double
@@ -112,6 +117,11 @@ public struct RouteLeg: Codable, Identifiable, Sendable {
     public var bikePickup: LiveBikeCounts? = nil
     public var bikeReturn: LiveBikeCounts? = nil
     public var steps: [StreetStep]? = nil
+}
+
+public struct RouteStop: Codable, Sendable {
+    public var id: String
+    public var name: String
 }
 
 public struct TransitLineOption: Codable, Identifiable, Sendable {
@@ -251,6 +261,15 @@ public struct TransitDeparture: Codable, Identifiable, Sendable {
     public var direction: String?
     public var routeColor: String?
     public var predictionReportedAt: String
+    public var platformID: String { stop.id.split(separator: ":").last.map(String.init) ?? stop.id }
+
+    public func countdown(vehicle: LiveVehicle? = nil, now: Date) -> String {
+        if mode == .subway {
+            return TransitArrival.subwayLabel(arrival: arrivalTime, departure: departureTime, trackingId: trackingId,
+                platform: platformID, isNextStop: isNextStop != false, vehicle: vehicle, now: now)
+        }
+        return TransitArrival.label(arrival: arrivalTime, departure: departureTime, now: now)
+    }
 }
 public enum TransitArrival {
     public static func date(_ value: String) -> Date? {
@@ -263,6 +282,26 @@ public enum TransitArrival {
         if leaves < now { return "Departed" }
         let seconds = arrives.timeIntervalSince(now)
         return seconds < 60 ? "Due" : "\(Int(ceil(seconds / 60))) min"
+    }
+
+    public static func subwayLabel(arrival: String?, departure: String, trackingId: String?, platform: String,
+                                   isNextStop: Bool, vehicle: LiveVehicle?, now: Date) -> String {
+        let matching = isNextStop && trackingId != nil && vehicle?.trackingId == trackingId
+            && vehicle?.nextStop?.stopId == platform && vehicle?.positionReport?.stopId == platform
+        if matching, let vehicle {
+            if vehicle.isDue(for: platform, at: now) { return "Due" }
+            if let report = vehicle.positionReport, report.accuracy == "reported-stop",
+               let date = date(report.reportedAt), (-30..<60).contains(now.timeIntervalSince(date)) {
+                return "At station"
+            }
+        }
+        if !matching, let leaves = date(departure), leaves < now { return "Departed" }
+        let motion = matching ? vehicle?.motion : nil
+        let arrives = motion?.toStopId == platform
+            ? motion.map { Date(timeIntervalSince1970: $0.arrivesAt / 1000) }
+            : date(arrival ?? departure)
+        guard let arrives, arrives > now else { return "Updating" }
+        return "\(Int(ceil(arrives.timeIntervalSince(now) / 60))) min"
     }
 }
 public struct TransitStation: Codable, Identifiable, Sendable {
@@ -327,11 +366,14 @@ public struct LiveVehicle: Codable, Identifiable, Sendable {
         default: "MTA next-stop report"
         }
     }
-    public func isDue(at now: Date) -> Bool {
-        guard mode == .subway, let stop = nextStop, let date = TransitArrival.date(stop.reportedAt),
-              now.timeIntervalSince(date) <= 180,
-              motion != nil || accuracy == "prediction-stop" || positionReport?.stopId == stop.stopId else { return false }
-        return TransitArrival.label(arrival: stop.arrivalTime, departure: stop.departureTime, now: now) == "Due"
+    public func isDue(for platform: String, at now: Date) -> Bool {
+        guard mode == .subway, let positionReport, positionReport.accuracy == "next-stop", positionReport.stopId == platform,
+              nextStop?.stopId == platform, let motion, motion.toStopId == platform, motion.points.count >= 2,
+              let seen = TransitArrival.date(positionReport.reportedAt),
+              (-30..<60).contains(now.timeIntervalSince(seen)) else { return false }
+        let milliseconds = now.timeIntervalSince1970 * 1000
+        return milliseconds >= motion.startedAt && milliseconds <= motion.expiresAt
+            && (0..<60000).contains(motion.arrivesAt - milliseconds) && milliseconds < motion.arrivesAt
     }
 }
 public struct TrainMotion: Codable, Sendable {

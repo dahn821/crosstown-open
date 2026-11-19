@@ -64,6 +64,18 @@ test('coordinates and hard limits are validated at the API boundary',()=>{
  assert.throws(()=>request({lowAssistBikePaceMph:'10.1'}));
 });
 
+test('route details use the selected live trip stop sequence and exclude boarding from the count',()=>{
+ const query=request(defaults()),board=point('Start platform','A31N'),exit=point('Exit platform','A28N');
+ const selected={departure:query.depart+120000,arrival:query.depart+720000,tripId:'selected',
+  stopIds:['A31N','A30N','A29N','A28N']};
+ const store={connection:()=>selected,tripIndex:{stops:{A30N:{name:'23 St'},A29N:{name:'34 St'}}}};
+ const raw={legs:[{mode:'SUBWAY',route:{shortName:'E'},duration:600,from:board,to:exit,
+  stopCalls:[{stopLocation:{gtfsId:'nyct:A31N'}},{stopLocation:{gtfsId:'nyct:A28N'}}]}]};
+ const leg=normalize(raw,query,store).legs[0];
+ assert.equal(leg.stopCount,3);
+ assert.deepEqual(leg.intermediateStops.map(stop=>stop.name),['23 St','34 St']);
+});
+
 function bikeTripFixture({rideSeconds=1800,shortWalk=180,longWalk=360}={}){
  const now=Date.now(),origin=place('Origin'),destination=place('Destination',40.79,-73.99);
  const station=(id,latitude,classicBikes,ebikes)=>({id,name:id,coordinate:{latitude,longitude:-73.99},classicBikes,ebikes,docks:5,reportedAt:now,isRenting:true,isReturning:true});

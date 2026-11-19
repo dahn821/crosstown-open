@@ -1,4 +1,4 @@
-import {sampleTrack} from './track-position.mjs';
+import {approachingWithinMinute,sampleTrack} from './track-position.mjs';
 
 const escape=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 
@@ -10,15 +10,43 @@ export function arrivalLabel({arrivalTime,departureTime},now=Date.now()){
   return seconds<60?'Due':Math.ceil(seconds/60)+' min';
 }
 
-export function liveTimeMarkup(call){
-  const text=arrivalLabel(call);
-  return `<time datetime="${escape(call.arrivalTime??call.departureTime)}" data-arrival-time="${escape(call.arrivalTime??call.departureTime)}" data-departure-time="${escape(call.departureTime)}" data-due="${text==='Due'}">${text}</time>`;
+export function platformID(call){
+  return (call.stopId||call.stop?.id||'').split(':').at(-1);
 }
 
-export function updateLiveTimes(panel){
+export function trainIsDue(vehicle,stopId,now=Date.now()){
+  return vehicle?.mode==='subway'&&vehicle.positionReport?.accuracy==='next-stop'&&
+    vehicle.positionReport.stopId===stopId&&vehicle.nextStop?.stopId===stopId&&vehicle.motion?.toStopId===stopId&&
+    approachingWithinMinute(vehicle.motion,Date.parse(vehicle.positionReport.reportedAt),now);
+}
+
+export function subwayArrivalLabel(call,vehicle,now=Date.now()){
+  const stopId=platformID(call);
+  const matching=call.isNextStop!==false&&vehicle?.trackingId===call.trackingId&&
+    vehicle?.nextStop?.stopId===stopId&&vehicle.positionReport?.stopId===stopId;
+  if(matching&&trainIsDue(vehicle,stopId,now))return 'Due';
+  if(matching&&vehicle.positionReport.accuracy==='reported-stop'&&recent(vehicle.positionReport.reportedAt,now,60000)){
+    return 'At station';
+  }
+  const arrival=matching&&vehicle.motion?.toStopId===stopId?vehicle.motion.arrivesAt:Date.parse(call.arrivalTime??call.departureTime);
+  if(Date.parse(call.departureTime)<now&&!matching)return 'Departed';
+  return arrival>now?Math.ceil((arrival-now)/60000)+' min':'Updating';
+}
+
+export function liveTimeMarkup(call,vehicle){
+  const subway=call.mode==='subway';
+  const text=subway?subwayArrivalLabel(call,vehicle):arrivalLabel(call);
+  const trip=subway?` data-subway-trip="${escape(call.trackingId)}" data-stop-id="${escape(platformID(call))}" data-next-stop="${call.isNextStop!==false}"`:'';
+  return `<time datetime="${escape(call.arrivalTime??call.departureTime)}" data-arrival-time="${escape(call.arrivalTime??call.departureTime)}" data-departure-time="${escape(call.departureTime)}"${trip} data-due="${text==='Due'}">${text}</time>`;
+}
+
+export function updateLiveTimes(panel,findTrip){
   const now=Date.now();
   for(const time of panel.querySelectorAll('time[data-arrival-time]')){
-    const text=arrivalLabel(time.dataset,now);
+    const fields=time.dataset;
+    const text='subwayTrip' in fields?subwayArrivalLabel({
+      ...fields,trackingId:fields.subwayTrip,isNextStop:fields.nextStop==='true'
+    },findTrip?.(fields.subwayTrip),now):arrivalLabel(fields,now);
     if(time.textContent!==text)time.textContent=text;
     time.dataset.due=String(text==='Due');
   }
@@ -27,11 +55,6 @@ export function updateLiveTimes(panel){
 function recent(report,now,maxAge){
   const time=Date.parse(report);
   return time>=now-maxAge&&time<=now+120000;
-}
-
-export function trainIsDue(vehicle,now=Date.now()){
-  const stop=vehicle.nextStop;
-  return Boolean(stop&&recent(stop.reportedAt,now,180000)&&arrivalLabel(stop,now)==='Due');
 }
 
 export function vehicleSource(vehicle){
@@ -44,12 +67,12 @@ export function vehicleSource(vehicle){
   }
 }
 
-export function vehicleReports(snapshot,board,now=Date.now()){
+export function vehicleReports(snapshot,now=Date.now()){
   const reports=new Map();
   for(const vehicle of snapshot){
     const tracked=vehicle.trackingId||vehicle.id;
-    if(vehicle.accuracy!=='prediction-stop'||trainIsDue(vehicle,now)){
-      if(recent(vehicle.reportedAt,now,vehicle.accuracy==='prediction-stop'?180000:90000))reports.set(tracked,vehicle);
+    if(vehicle.accuracy!=='prediction-stop'){
+      if(recent(vehicle.reportedAt,now,90000))reports.set(tracked,vehicle);
       continue;
     }
     const position=vehicle.positionReport;
@@ -58,35 +81,6 @@ export function vehicleReports(snapshot,board,now=Date.now()){
         status:position.accuracy==='reported-stop'?`Reported at ${position.stopName}`:`Heading toward ${position.stopName}`,
         bearing:null,directionLabel:null,nextStop:null});
     }
-  }
-  for(const row of board){
-    if(row.mode!=='subway'||!row.trackingId||!row.stop?.coordinate||
-      !recent(row.predictionReportedAt,now,row.estimateSource==='vehicle-reports'?90000:180000))continue;
-    const vehicle=reports.get(row.trackingId);
-    if(vehicle?.accuracy==='gps')continue;
-    const stopId=row.stop.id.split(':').at(-1),name=row.stop.name;
-    const nextStop={stopId,name,coordinate:row.stop.coordinate,arrivalTime:row.arrivalTime,
-      departureTime:row.departureTime,reportedAt:row.predictionReportedAt};
-    if(row.estimateSource==='vehicle-reports'){
-      if(row.isNextStop&&vehicle?.nextStop?.stopId===stopId){
-        const track=vehicle.motion;
-        const arrivesAt=Date.parse(row.arrivalTime);
-        const motion=track&&arrivesAt>track.startedAt?{...track,arrivesAt}:track;
-        reports.set(row.trackingId,{...vehicle,motion,nextStop,directionLabel:row.direction||vehicle.directionLabel});
-      }
-      continue;
-    }
-    if(arrivalLabel(row,now)!=='Due')continue;
-    if(vehicle?.accuracy==='reported-stop'&&vehicle.positionReport?.stopId===stopId){
-      reports.set(row.trackingId,{...vehicle,nextStop,directionLabel:row.direction||vehicle.directionLabel});
-      continue;
-    }
-    const sameStop=vehicle?.accuracy==='prediction-stop'&&vehicle.nextStop?.stopId===stopId;
-    reports.set(row.trackingId,{...vehicle,id:vehicle?.id||row.trackingId,trackingId:row.trackingId,
-      mode:'subway',line:row.line,routeColor:row.routeColor,coordinate:nextStop.coordinate,
-      accuracy:'prediction-stop',status:`Due at ${name}`,stopName:name,nextStop,
-      directionLabel:row.direction||vehicle?.directionLabel,bearing:sameStop?vehicle.bearing:null,
-      source:'MTA subway arrival predictions',reportedAt:row.predictionReportedAt});
   }
   return [...reports.values()].map(vehicle=>{
     const sample=vehicle.motion&&sampleTrack(vehicle.motion,now);

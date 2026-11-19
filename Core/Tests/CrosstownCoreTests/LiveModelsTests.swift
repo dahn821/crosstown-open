@@ -7,6 +7,30 @@ final class LiveModelsTests: XCTestCase {
         XCTAssertEqual(PlanRequest().origin, PlanRequest.currentLocationID)
         XCTAssertNotEqual(PlanRequest().origin, "penn")
     }
+    func testSubwayCountdownRequiresTheExactLiveApproach() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let reported = now.addingTimeInterval(-15).ISO8601Format()
+        let vehicle = try JSONDecoder().decode(LiveVehicle.self, from: Data("""
+        {
+          "id":"t","trackingId":"t","mode":"subway","line":"E","coordinate":{"latitude":40.74,"longitude":-74.0},
+          "accuracy":"interpolated","status":"Estimated toward 14 St","reportedAt":"\(reported)","sourceTimestamp":"\(reported)",
+          "reportedAtSeconds":1799999985,"source":"MTA",
+          "positionReport":{"accuracy":"next-stop","stopId":"A31N","coordinate":{"latitude":40.74,"longitude":-74.0},"reportedAt":"\(reported)"},
+          "nextStop":{"stopId":"A31N","name":"14 St","coordinate":{"latitude":40.74,"longitude":-74.0},
+            "departureTime":"\(now.addingTimeInterval(55).ISO8601Format())","reportedAt":"\(reported)"},
+          "motion":{"fromStopId":"A32N","toStopId":"A31N","startedAt":1799999970000,"arrivesAt":1800000030000,"expiresAt":1800000075000,
+            "points":[[40.73,-74,0],[40.74,-74,1100]]}
+        }
+        """.utf8))
+        let arrival = now.addingTimeInterval(30).ISO8601Format(), departure = now.addingTimeInterval(55).ISO8601Format()
+        XCTAssertTrue(vehicle.isDue(for: "A31N", at: now))
+        XCTAssertFalse(vehicle.isDue(for: "A31S", at: now))
+        XCTAssertEqual(TransitArrival.subwayLabel(arrival: arrival, departure: departure, trackingId: "t", platform: "A31N",
+            isNextStop: true, vehicle: vehicle, now: now), "Due")
+        XCTAssertEqual(TransitArrival.subwayLabel(arrival: arrival, departure: departure, trackingId: "other", platform: "A31N",
+            isNextStop: true, vehicle: vehicle, now: now), "1 min")
+        XCTAssertFalse(vehicle.isDue(for: "A31N", at: now.addingTimeInterval(30)))
+    }
     // Captured from the real service; test resources are never loaded by either app.
     private func capturedPlan() throws -> PlanResponse {
         let url = Bundle.module.url(forResource: "live-plan", withExtension: "json", subdirectory: "Fixtures")!

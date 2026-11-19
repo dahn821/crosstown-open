@@ -129,8 +129,9 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect}){
     }).join('');
   }
   function departureButton(row,bullet,className){
-    if(!row.trackingId)return `<span class="${className}">${bullet}${liveTimeMarkup(row)}</span>`;
-    return `<button class="${className}" data-track-trip="${esc(row.trackingId)}" title="Follow ${esc(row.line)}">${bullet}${liveTimeMarkup(row)}</button>`;
+    const time=liveTimeMarkup(row,vehicles.findTrip(row.trackingId));
+    if(!row.trackingId)return `<span class="${className}">${bullet}${time}</span>`;
+    return `<button class="${className}" data-track-trip="${esc(row.trackingId)}" title="Follow ${esc(row.line)}">${bullet}${time}</button>`;
   }
   function renderBoard(){
     updateLines();
@@ -257,7 +258,7 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect}){
   setInterval(refresh,30000);
   setInterval(()=>{
     if(view==='bike'||view==='directions'||document.hidden||detail.hidden)return;
-    updateLiveTimes(body);
+    updateLiveTimes(body,vehicles.findTrip);
   },1000);
 
   return {

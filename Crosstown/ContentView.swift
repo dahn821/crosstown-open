@@ -13,6 +13,7 @@ struct ContentView: View {
     @State private var aboutPresented = false
     @State private var timePresented = false
     @State private var comparisonMode = "all"
+    @State private var showsLiveVehicles = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var prefersShelteredTransit: Bool {
         comparisonMode == "all" && model.request.preferences.priority == .sheltered
@@ -80,7 +81,7 @@ struct ContentView: View {
         }
         .sheet(item: $selectedRoute) { route in
             let current = comparedRoutes.first { $0.id == (route.groupId ?? route.id) } ?? model.resolvedRoute(route)
-            RouteDetail(route: current, alternatives: model.departureOptions(for: current), onChooseDeparture: model.chooseDeparture, isSaved: model.isCurrentTripSaved, onSave: { model.save(route) }, onRefresh: { await model.refresh() }, apiBaseURLString: model.apiBaseURLString)
+            RouteDetail(route: current, alternatives: model.departureOptions(for: current), onChooseDeparture: model.chooseDeparture, isSaved: model.isCurrentTripSaved, onSave: { model.save(route) }, onRefresh: { await model.refresh() })
         }
         .sheet(isPresented: $aboutPresented) { SourcesView(model: model) }
         .sheet(isPresented: $timePresented) {
@@ -95,7 +96,8 @@ struct ContentView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 ZStack(alignment: .top) {
-                    JourneyMap(route: comparedRoutes.first, origin: model.origin, destination: model.destination, apiBaseURLString: model.apiBaseURLString)
+                    JourneyMap(route: comparedRoutes.first, origin: model.origin, destination: model.destination,
+                               apiBaseURLString: model.apiBaseURLString, showsLiveVehicles: showsLiveVehicles)
                         .frame(height: 285).clipShape(.rect(cornerRadius: 24))
                     VStack(spacing: 0) {
                         endpointButton(.origin, name: model.originLabel, symbol: "location.fill")
@@ -108,8 +110,11 @@ struct ContentView: View {
                         endpointButton(.destination, name: model.destination?.name ?? "Choose a destination", symbol: "mappin.circle.fill")
                     }.padding(12).background(.white, in: .rect(cornerRadius: 18))
                         .shadow(color: .black.opacity(0.06), radius: 12, y: 4).padding(12)
-                    Text("STREET ROUTE").font(.system(size: 8, weight: .semibold, design: .monospaced)).tracking(1)
-                        .padding(7).background(Theme.canvas.opacity(0.94), in: Capsule()).frame(maxHeight: .infinity, alignment: .bottom).padding(.bottom, 12)
+                    Button { showsLiveVehicles.toggle() } label: {
+                        Image(systemName: showsLiveVehicles ? "tram.circle.fill" : "tram.circle").font(.title2)
+                            .frame(width: 44, height: 44).background(.regularMaterial, in: Circle())
+                    }.accessibilityLabel(showsLiveVehicles ? "Hide live vehicles" : "Show live vehicles")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing).padding(10)
                 }
 
                 HStack {
