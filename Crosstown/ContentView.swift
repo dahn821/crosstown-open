@@ -15,11 +15,21 @@ struct ContentView: View {
     @State private var vehicleMapPresented = false
     @State private var comparisonMode = "all"
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var prefersShelteredTransit: Bool {
+        comparisonMode == "all" && model.request.preferences.priority == .sheltered
+    }
     private var comparedRoutes: [Itinerary] {
         guard let response = model.response else { return [] }
-        if comparisonMode == "all" { return response.routes.map(model.resolvedRoute) }
+        if comparisonMode == "all" {
+            return response.routes.filter { route in
+                !prefersShelteredTransit || (route.legs.contains { $0.mode == .subway || $0.mode == .bus }
+                    && route.legs.allSatisfy { $0.mode != .bike })
+            }.map(model.resolvedRoute)
+        }
         return (response.routeGroups?[comparisonMode] ?? response.routes.filter { route in
-            comparisonMode == "walk" ? route.legs.allSatisfy { $0.mode == .walk } : route.legs.contains { $0.mode.rawValue == comparisonMode }
+            if comparisonMode == "walk" { return route.legs.allSatisfy { $0.mode == .walk } }
+            return route.legs.contains { $0.mode.rawValue == comparisonMode }
+                && (comparisonMode == "bike" || route.legs.allSatisfy { $0.mode.rawValue == comparisonMode || $0.mode == .walk })
         }).map(model.resolvedRoute)
     }
 
@@ -67,8 +77,8 @@ struct ContentView: View {
             PreferencesView(preferences: model.request.preferences) { model.request.preferences = $0 }
         }
         .sheet(item: $selectedRoute) { route in
-            let current = ([model.response?.routes ?? []] + Array(model.response?.routeGroups?.values ?? [:].values)).flatMap { $0 }.first { $0.id == (route.groupId ?? route.id) } ?? route
-            RouteDetail(route: model.resolvedRoute(current), alternatives: model.departureOptions(for: current), onChooseDeparture: model.chooseDeparture, isSaved: model.isCurrentTripSaved, onSave: { model.save(route) }, onRefresh: { await model.refresh() }, apiBaseURLString: model.apiBaseURLString)
+            let current = comparedRoutes.first { $0.id == (route.groupId ?? route.id) } ?? model.resolvedRoute(route)
+            RouteDetail(route: current, alternatives: model.departureOptions(for: current), onChooseDeparture: model.chooseDeparture, isSaved: model.isCurrentTripSaved, onSave: { model.save(route) }, onRefresh: { await model.refresh() }, apiBaseURLString: model.apiBaseURLString)
         }
         .sheet(isPresented: $aboutPresented) { SourcesView(model: model) }
         .fullScreenCover(isPresented: $vehicleMapPresented) {
@@ -171,13 +181,16 @@ struct ContentView: View {
                     HStack {
                         Text("\(comparedRoutes.count) ways to get there").font(.system(size: 14, weight: .semibold))
                         Spacer()
-                        Text(model.response?.routes.first?.dataSummary ?? "Travel estimates").font(.system(size: 11)).foregroundStyle(Theme.secondary)
+                        Text(comparedRoutes.first?.dataSummary ?? "Travel estimates").font(.system(size: 11)).foregroundStyle(Theme.secondary)
+                    }
+                    if prefersShelteredTransit {
+                        Text("Subway and bus trips ranked by estimated time outside.").font(.caption).foregroundStyle(Theme.secondary)
                     }
                     if comparedRoutes.isEmpty {
                         VStack(spacing: 12) {
                             Image(systemName: "slider.horizontal.3").font(.title2)
                             Text("A little more room?").font(.title3.bold())
-                            Text("No reachable route fits these limits. Try allowing a longer walk, a higher budget, or another travel mode.").font(.subheadline).foregroundStyle(Theme.secondary).multilineTextAlignment(.center)
+                            Text(prefersShelteredTransit ? "No subway or bus trip fits these limits. Try allowing a longer walk or additional transit modes." : "No reachable route fits these limits. Try allowing a longer walk, a higher budget, or another travel mode.").font(.subheadline).foregroundStyle(Theme.secondary).multilineTextAlignment(.center)
                             Button("Adjust my limits") { preferencesPresented = true }.buttonStyle(.borderedProminent)
                         }.frame(maxWidth: .infinity).padding(24).background(.white, in: .rect(cornerRadius: 22))
                     }

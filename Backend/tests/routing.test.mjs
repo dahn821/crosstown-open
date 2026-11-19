@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {defaults,validateRequest,normalize,rank,decodePolyline,searchFamilies,compareModes} from '../otp.mjs';
+import {defaults,validateRequest,normalize,rank,decodePolyline,searchFamilies,compareModes,bestRoutes} from '../otp.mjs';
 import {FeedStore} from '../feeds.mjs';
 const place=(id,latitude=40.75,longitude=-73.99)=>({id,name:id,neighborhood:'NYC',coordinate:{latitude,longitude},selectable:true});
 const request=p=>({...validateRequest({origin:place('A'),destination:place('B',40.78,-73.95),preferences:p}),depart:Date.now()});
@@ -19,6 +19,35 @@ test('mode comparisons retain a valid train even when a bus dominates the overal
  const valid=[bus,train,bike],groups=compareModes(valid,defaults());
  assert(!rank(valid,defaults()).some(r=>r.id==='train'));
  assert.equal(groups.subway[0].id,'train');assert.equal(groups.bus[0].id,'bus');assert.equal(groups.bike[0].id,'bike');assert.deepEqual(groups.walk,[]);
+});
+test('subway and bus comparisons count riding time across transfers, excluding waits',()=>{
+ const summary={minutes:40,fareCents:300,outdoorMinutes:10,undergroundMinutes:10,walkingMinutes:4,bikingMinutes:0,transfers:2};
+ const ride=(mode,line,minutes,wait=0)=>({mode,line,duration:minutes+wait,waitingMinutes:wait});
+ const train={...summary,id:'train',legs:[ride('subway','F',10),ride('subway','A',9),ride('bus','M4',6,14)]};
+ const bus={...summary,id:'bus',legs:[ride('bus','M4',10),ride('bus','M2',10),ride('subway','F',7,10)]};
+ const bike={...summary,id:'bike',bikingMinutes:30,legs:[{mode:'bike',duration:30,setupMinutes:2},ride('subway','N',3)]};
+ const mixed={...summary,id:'mixed',legs:[ride('bus','M2',12),ride('subway','F',12)]};
+ const groups=compareModes([train,bus,bike,mixed],defaults());
+ assert.deepEqual(groups.subway.map(route=>route.id),['train']);
+ assert.deepEqual(groups.bus.map(route=>route.id),['bus']);
+ assert.deepEqual(groups.bike.map(route=>route.id),['bike']);
+});
+test('Best Fastest compares all modes and Less outside ranks only bike-free transit',()=>{
+ const summary={fareCents:300,undergroundMinutes:5,walkingMinutes:3,bikingMinutes:0,transfers:0};
+ const bike={...summary,id:'bike',minutes:8,outdoorMinutes:8,bikingMinutes:6,legs:[{mode:'bike',duration:6},{mode:'walk',duration:2}]};
+ const bikeTrain={...summary,id:'bike-train',minutes:23,outdoorMinutes:4,bikingMinutes:3,legs:[{mode:'bike',duration:3},{mode:'subway',line:'N',duration:20}]};
+ const walk={...summary,id:'walk',minutes:15,outdoorMinutes:15,walkingMinutes:15,legs:[{mode:'walk',duration:15}]};
+ const bus={...summary,id:'bus',minutes:16,outdoorMinutes:9,legs:[{mode:'bus',line:'M2',duration:13}]};
+ const subway={...summary,id:'subway',minutes:27,outdoorMinutes:5,legs:[{mode:'subway',line:'A',duration:24}]};
+ const mix={...summary,id:'mix',minutes:22,outdoorMinutes:5,legs:[{mode:'subway',line:'F',duration:10},{mode:'bus',line:'M1',duration:9}]};
+ const candidates=[bus,bikeTrain,walk,mix,subway,bike];
+ assert.equal(bestRoutes(candidates,defaults())[0].id,'bike');
+ const sheltered={...defaults(),priority:'sheltered'};
+ const best=bestRoutes(candidates,sheltered);
+ assert.equal(best[0].id,'mix');
+ assert(best.every(route=>!['walk','bike','bike-train'].includes(route.id)));
+ assert.deepEqual(bestRoutes([walk,bike],sheltered),[]);
+ assert(compareModes(candidates,sheltered).bike.length);
 });
 test('a legitimate zero custom score beats a positive score; only all-zero weights fall back to time',()=>{
  const bike={id:'free',minutes:40,fareCents:0,outdoorMinutes:40,undergroundMinutes:0,walkingMinutes:0,bikingMinutes:40,transfers:0,legs:[{mode:'bike'}]};

@@ -23,14 +23,53 @@ export function predictionSnapshot(store){
 
 // Each departure is a complete forwards-validated itinerary, including every
 // downstream transfer, walking limit, fare limit, and any arrival deadline.
-export function subwayOptions(pairs,request,store,{normalize,rank,geometry=()=>null}={}){
-  const grouped=new Map(),alternativeRoutes={},primaries=[];
+export function subwayOptions(pairs,request,store,{normalize,rank,primaryTransitMode=()=>undefined,geometry=()=>null}={}){
+  const grouped=new Map(),alternativeRoutes={},primaries=[],transitCandidates={subway:[],bus:[]};
+  const pick=routes=>rank(routes,request.preferences)[0];
+
+  function representative(routes,groupId){
+    const best=pick(routes);
+    if(!groupId)return best;
+
+    const byChoice=new Map();
+    for(const route of routes){
+      const id=choiceID(route,groupId),previous=byChoice.get(id);
+      byChoice.set(id,previous?pick([route,previous]):route);
+    }
+    const ordered=[...byChoice].sort((a,b)=>Date.parse(a[1].legs.find(transit)?.departureTime)-Date.parse(b[1].legs.find(transit)?.departureTime)||a[1].minutes-b[1].minutes);
+    const selected=new Map([[choiceID(best,groupId),best]]),lineSets=new Set();
+    for(const [id,route] of ordered){const lines=route.legs.filter(transit).map(leg=>leg.line).join('|');if(!lineSets.has(lines)){selected.set(id,route);lineSets.add(lines);}}
+    for(const [id,route] of ordered){if(selected.size>=32)break;selected.set(id,route);}
+    const ids=[...selected.keys()];
+    const lineOptions=best.legs.map((leg,index)=>leg.mode==='subway'?[...new Map([...selected.values()].map(route=>route.legs[index]).map(item=>[item.line,{line:item.line,routeColor:item.routeColor}])).values()].sort((a,b)=>a.line.localeCompare(b.line,undefined,{numeric:true})):null);
+    const decorate=(route,id)=>({...route,id,groupId,choiceId:choiceID(route,groupId),alternativeIds:ids,legs:route.legs.map((leg,index)=>lineOptions[index]?{...leg,lineOptions:lineOptions[index]}:leg)});
+    for(const [id,route] of selected)alternativeRoutes[id]=decorate(route,id);
+    return decorate(best,groupId);
+  }
+
+  function record(routes,groupId){
+    const best=representative(routes,groupId);
+    primaries.push(best);
+    for(const [mode,candidates] of Object.entries(transitCandidates)){
+      const eligible=routes.filter(route=>primaryTransitMode(route)===mode);
+      if(!eligible.length)continue;
+      // Unrestricted choices can include another train that changes the main
+      // mode of a mixed itinerary. Keep that choice in Best only.
+      const scopedId=groupId?`${groupId}-${mode}`:undefined;
+      candidates.push(eligible.length===routes.length?best:representative(eligible,scopedId));
+    }
+  }
+
   for(const pair of pairs){const key=corridorKey(pair.raw);if(!grouped.has(key))grouped.set(key,[]);grouped.get(key).push(pair);}
   for(const [key,group] of grouped){
-    const leader=rank(group.map(pair=>pair.route),request.preferences)[0];if(!leader)continue;
-    if(!leader.legs.some(leg=>leg.mode==='subway')){primaries.push(leader);continue;}
-    const groupId='corridor-'+hash(key),base=group.find(pair=>pair.route===leader).raw,choices=new Map();
-    const add=(route,raw)=>{if(route)choices.set(choiceID(route,groupId),{route,raw});};
+    const base=group[0].raw;
+    if(!base.legs.some(leg=>leg.mode==='SUBWAY')){record(group.map(pair=>pair.route));continue;}
+    const groupId='corridor-'+hash(key),choices=new Map();
+    function add(route,raw){
+      const id=choiceID(route,groupId)+'|'+(primaryTransitMode(route)||'');
+      const previous=choices.get(id);
+      if(!previous||pick([route,previous.route])===route)choices.set(id,{route,raw});
+    }
     for(const pair of group)add(pair.route,pair.raw);
     for(let i=0;i<base.legs.length;i++){
       if(base.legs[i].mode!=='SUBWAY')continue;
@@ -48,14 +87,7 @@ export function subwayOptions(pairs,request,store,{normalize,rank,geometry=()=>n
       }
       }
     }
-    const all=[...choices].map(([id,choice])=>[id,choice.route]),best=rank(all.map(([,route])=>route),request.preferences)[0]||leader,bestId=choiceID(best,groupId);
-    const ordered=all.sort((a,b)=>Date.parse(a[1].legs.find(transit)?.departureTime)-Date.parse(b[1].legs.find(transit)?.departureTime)||a[1].minutes-b[1].minutes),selected=new Map([[bestId,best]]),lineSets=new Set();
-    for(const [id,route] of ordered){const lines=route.legs.filter(transit).map(leg=>leg.line).join('|');if(!lineSets.has(lines)){selected.set(id,route);lineSets.add(lines);}}
-    for(const [id,route] of ordered){if(selected.size>=32)break;selected.set(id,route);}
-    const ids=[...selected.keys()],lineOptions=best.legs.map((leg,index)=>leg.mode==='subway'?[...new Map([...selected.values()].map(route=>route.legs[index]).map(item=>[item.line,{line:item.line,routeColor:item.routeColor}])).values()].sort((a,b)=>a.line.localeCompare(b.line,undefined,{numeric:true})):null);
-    const decorate=(route,id)=>({...route,id,groupId,choiceId:choiceID(route,groupId),alternativeIds:ids,legs:route.legs.map((leg,index)=>lineOptions[index]?{...leg,lineOptions:lineOptions[index]}:leg)});
-    for(const [id,route] of selected)alternativeRoutes[id]=decorate(route,id);
-    primaries.push(decorate(best,groupId));
+    record([...choices.values()].map(choice=>choice.route),groupId);
   }
-  return {primaries,alternativeRoutes};
+  return {primaries,alternativeRoutes,transitCandidates};
 }

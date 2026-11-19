@@ -208,8 +208,30 @@ export function searchFamilies(p,busConnected){
   return families;
 }
 
-export function compareModes(valid,p){
-  return Object.fromEntries(['subway','bus','bike','walk'].map(mode=>[mode,rank(valid.filter(r=>mode==='walk'?r.legs.every(l=>l.mode==='walk'):r.legs.some(l=>l.mode===mode)),p)]));
+export function primaryTransitMode(route){
+  const riding = new Map();
+  for(const leg of route.legs){
+    if(leg.mode==='walk')continue;
+    const stationary = (leg.mode==='bike'?leg.setupMinutes:leg.waitingMinutes)??0;
+    riding.set(leg.mode,(riding.get(leg.mode)||0)+Math.max(0,(leg.duration??0)-stationary));
+  }
+  const total = [...riding.values()].reduce((sum,minutes)=>sum+minutes,0);
+  return ['subway','bus'].find(mode=>riding.has(mode)&&(riding.size===1||riding.get(mode)>total/2));
+}
+
+export function bestRoutes(valid,p){
+  const eligible=p.priority==='sheltered'?valid.filter(route=>
+    route.legs.some(leg=>leg.mode==='subway'||leg.mode==='bus')&&route.legs.every(leg=>leg.mode!=='bike')):valid;
+  return rank(eligible,p);
+}
+
+export function compareModes(valid,p,transitCandidates){
+  return {
+    subway:rank(transitCandidates?.subway??valid.filter(route=>primaryTransitMode(route)==='subway'),p),
+    bus:rank(transitCandidates?.bus??valid.filter(route=>primaryTransitMode(route)==='bus'),p),
+    bike:rank(valid.filter(route=>route.legs.some(leg=>leg.mode==='bike')),p),
+    walk:rank(valid.filter(route=>route.legs.every(leg=>leg.mode==='walk')),p),
+  };
 }
 
 export async function route(input,store,{searcher=search,bikeCandidateLimit=8,rentalTransitFamilies=true,egressBikeConnections=false}={}){
@@ -222,8 +244,8 @@ export async function route(input,store,{searcher=search,bikeCandidateLimit=8,re
   if(egressBikeConnections)bikeSearches.push(bikeConnections(request,store,searcher,bikeCandidateLimit,true));
   raw.push(...(await Promise.all(bikeSearches)).flat());
   const snapshot=predictionSnapshot(store),pairs=raw.map(raw=>({raw,route:normalize(raw,request,snapshot)})).filter(pair=>pair.route),valid=pairs.map(pair=>pair.route);
-  const options=subwayOptions(pairs,request,snapshot,{normalize,rank,geometry:connection=>connection.stopIds.map(id=>tripIndex.stops?.[id]).filter(Boolean).map(stop=>({latitude:stop.latitude,longitude:stop.longitude}))});
-  const routes=rank(options.primaries,p),routeGroups=compareModes(options.primaries,p),used=new Set([...routes,...Object.values(routeGroups).flat()].flatMap(route=>route.alternativeIds||[])),alternativeRoutes=Object.fromEntries(Object.entries(options.alternativeRoutes).filter(([id])=>used.has(id)));
+  const options=subwayOptions(pairs,request,snapshot,{normalize,rank,primaryTransitMode,geometry:connection=>connection.stopIds.map(id=>tripIndex.stops?.[id]).filter(Boolean).map(stop=>({latitude:stop.latitude,longitude:stop.longitude}))});
+  const routes=bestRoutes(options.primaries,p),routeGroups=compareModes(options.primaries,p,options.transitCandidates),used=new Set([...routes,...Object.values(routeGroups).flat()].flatMap(route=>route.alternativeIds||[])),alternativeRoutes=Object.fromEntries(Object.entries(options.alternativeRoutes).filter(([id])=>used.has(id)));
   if(request.arriveBy!=null&&p.priority==='fastest')for(const r of [...routes,...Object.values(routeGroups).flat()])r.explanation='Shortest travel time among the connections found that meet your arrival deadline and limits.';
   return {routes,routeGroups,alternativeRoutes,searchBounds:{resultsPerFamily:10,windowMinutes:90,extraBikeConnections:8},notice:'MTA stop predictions and current Citi Bike station reports. Street travel and outdoor exposure are estimates. Availability can change before arrival.',consideredRoutes:raw.length,validRoutes:valid.length,optimality:'best-found-within-bounded-search',timing:{mode:request.arriveBy!=null?'arriveBy':request.departureTime?'departAt':'now',time:new Date(request.arriveBy??request.depart).toISOString()},isSample:false,generatedAt:new Date().toISOString(),feedStatus:store.status(),searchedFamilies:families.length+1,excludedScheduled:p.requireLiveTransit,partialSearch:errors.length>0,warnings:[...(!store.busKey?['Live bus predictions need a Bus Time API key. Bus schedules are only included if you turn off live-only transit.']:[]),...errors.map(()=> 'One route family could not be checked.')].filter((v,i,a)=>a.indexOf(v)===i)};
 }

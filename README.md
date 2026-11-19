@@ -15,6 +15,8 @@ Run `npm test` for backend and web tests and `swift test --package-path Core` fo
 
 The hosted app sends trip coordinates, timing, and mode settings to [Transitous](https://transitous.org/sources/) for street routes and transit candidates. Crosstown checks reachable transit legs against current MTA stop predictions, checks Citi Bike pickup bikes and return docks, filters by the user's limits, and ranks the remaining options. It searches a bounded set of routes. Use Refresh to request a new plan. Live vehicle markers and nearby departures are fetched independently. Bus markers use reported GPS. Subway markers use reported stations or next stops.
 
+**Best + Fastest** ranks by door-to-door time across enabled modes. The **Subway** and **Bus** tabs show trips that spend most of their riding time on that mode, summed across transfers. **Best + Less outside** compares bike-free subway and bus trips by estimated outdoor time, then by total travel time.
+
 Select a route to highlight it on the map and open its journey outline. **Start navigation** gives on-screen walking and biking directions in the foreground, with prompts to confirm Citi Bike pickup and return and transit boarding and alighting. Crosstown checks the selected live transit trip while you wait or ride. The phone processes navigation fixes in memory. A new search uses your location only when you pick **Find a new route**.
 
 The community deployment uses Transitous only for noncommercial, light use under its [API policy](https://transitous.org/api/). For other deployments or commercial use, arrange your own routing provider. Report issues through this repository.

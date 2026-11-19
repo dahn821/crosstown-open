@@ -36,7 +36,19 @@ const currentLocation=createCurrentLocationLookup({source:deviceLocation,onUpdat
 }});
 function useCurrentLocation(){closeJourney({focus:false});currentLocation.cancel();state.origin=null;clearTrip();if(state.modal?.type==='place'){sheet.close();state.modal=null;}currentLocation.request();}
 function refreshTrip(options={}){if(state.origin?.id===CURRENT_LOCATION_ID||!state.origin)return currentLocation.request(options);return planTrip(options);}
-function currentRoutes(){const routes=state.travelMode==='all'?(state.response?.routes||[]):(state.response?.routeGroups?.[state.travelMode]||state.response?.routes?.filter(r=>state.travelMode==='walk'?r.legs.every(l=>l.mode==='walk'):r.legs.some(l=>l.mode===state.travelMode))||[]);return routes.map(route=>resolveDeparture(route,state.response,departureSelections));}
+function currentRoutes(){
+ const mode=state.travelMode,all=state.response?.routes||[];
+ let routes=all;
+ if(mode==='all'){
+  if(state.preferences.priority==='sheltered')routes=all.filter(route=>route.legs.some(leg=>leg.mode==='subway'||leg.mode==='bus')&&route.legs.every(leg=>leg.mode!=='bike'));
+ }else{
+  routes=state.response?.routeGroups?.[mode]??all.filter(route=>{
+   if(mode==='walk')return route.legs.every(leg=>leg.mode==='walk');
+   return route.legs.some(leg=>leg.mode===mode)&&(mode==='bike'||route.legs.every(leg=>leg.mode===mode||leg.mode==='walk'));
+  });
+ }
+ return routes.map(route=>resolveDeparture(route,state.response,departureSelections));
+}
 async function planTrip({quiet=false}={}){
  if(!quiet&&state.journey)closeJourney({focus:false});
  if(!state.origin||!state.destination)return;const key=JSON.stringify([state.origin.id,state.destination.id,state.preferences,state.timing]);if(key!==departureRequestKey){for(const id of Object.keys(departureSelections))delete departureSelections[id];departureRequestKey=key;}const id=++searchId;abort?.abort();abort=new AbortController();state.loading=true;state.error=null;
@@ -47,12 +59,16 @@ async function planTrip({quiet=false}={}){
 }
 function renderRoutes(){
  updateFields();const list=$('#route-list');for(const b of document.querySelectorAll('[data-travel-mode]')){const active=b.dataset.travelMode===state.travelMode;b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active));}
- const context=$('#mode-context');context.hidden=state.travelMode==='all'&&!state.response?.partialSearch;context.textContent=state.response?.partialSearch?'Some route searches could not finish. Refresh to compare all options.':state.travelMode==='walk'?'Walking routes within your walking limit.':state.travelMode==='all'?'':`Routes that include ${state.travelMode==='bike'?'a bike ride':state.travelMode==='subway'?'the subway':'a bus'}. Your priorities and limits still apply.`;
+ const mode=state.travelMode,sheltered=mode==='all'&&state.preferences.priority==='sheltered';
+ const description={subway:'Trips where the subway accounts for most of the ride time.',bus:'Trips where buses account for most of the ride time.',walk:'Walking routes within your walking limit.',bike:'Routes that include a bike ride.'};
+ const context=$('#mode-context');
+ context.textContent=state.response?.partialSearch?'Some route searches could not finish. Refresh to compare all options.':sheltered?'Subway and bus trips ranked by estimated time outside.':description[mode]||'';
+ context.hidden=!context.textContent;
  if(!state.origin||!state.destination){const locating=state.location.status==='loading';$('#results-subtitle').textContent=locating?'Finding your current location':!state.origin?'Choose a start to find routes':'Choose a destination';list.innerHTML=`<div class="empty">${icon('locate')}<h3>${locating?'Finding your location…':!state.origin?'Start where you are.':'Where to?'}</h3><p>${esc(state.location.message||(locating?'Allow location access to find routes from where you are.':'Use your current location or choose a starting address.'))}</p>${!locating?'<button class="primary" data-action="current-location">Use current location</button>':''}<button class="text-button" data-place="${state.origin?'destination':'origin'}">Choose ${state.origin?'a destination':'a start'}</button></div>`;return;}
  if(state.loading&&!state.response){$('#results-subtitle').textContent='Checking connections…';list.innerHTML='<div class="loading"><i></i><strong>Looking beyond the nearest station</strong><span>Checking service times, bike docks and streets.</span></div>';return;}
  if(state.error){$('#results-subtitle').textContent='Connection needed';list.innerHTML=`<div class="empty">${icon('activity')}<h3>We couldn’t check this trip.</h3><p>${esc(state.error)}</p><button class="primary" data-action="refresh">Try again ${icon('refresh')}</button><p class="hint">Run the included Crosstown launcher if you’re using the app locally.</p></div>`;return;}
  const routes=currentRoutes();$('#results-subtitle').textContent=routes.length?`${routes.length} routes · best match ${mins(routes[0].minutes)} min · ${labels[state.preferences.priority].toLowerCase()}`:'No connections within your limits';
- if(!routes.length){const mode=state.travelMode;context.hidden=false;context.textContent=mode!=='all'&&!state.preferences.modes.includes(mode)?`${mode==='bike'?'Biking':mode==='subway'?'Subway':mode==='bus'?'Buses':'Walking'} is turned off. Enable it in Make it mine.`:mode==='bus'&&state.preferences.bikeSource==='ownBike'?'Your own bike cannot board a bus. Choose Citi Bike to compare bus connections.':mode==='bus'&&state.preferences.requireLiveTransit&&!state.health?.feeds?.bus?.configured?'Live buses need a Bus Time connection. Connect it in Sources, or explicitly allow schedules.':`No eligible ${mode==='all'?'':mode+' '}route was found within your limits${state.preferences.requireLiveTransit?' and current live reports':''}. Walking limit: ${state.preferences.maxWalkingMinutes} min. Biking limit: ${state.preferences.maxBikingMinutes} min.`;list.innerHTML=`<div class="empty">${icon('sliders')}<h3>A little more room?</h3><p>No reachable route fits these limits. Try more walking or biking time, another mode, or allow scheduled transit when live predictions are missing.</p><button class="primary" data-action="preferences">Adjust my limits</button></div>`;return;}
+ if(!routes.length){context.hidden=false;context.textContent=mode!=='all'&&!state.preferences.modes.includes(mode)?`${mode==='bike'?'Biking':mode==='subway'?'Subway':mode==='bus'?'Buses':'Walking'} is turned off. Enable it in Make it mine.`:mode==='bus'&&state.preferences.bikeSource==='ownBike'?'Your own bike cannot board a bus. Choose Citi Bike to compare bus connections.':mode==='bus'&&state.preferences.requireLiveTransit&&!state.health?.feeds?.bus?.configured?'Live buses need a Bus Time connection. Connect it in Sources, or explicitly allow schedules.':sheltered?'No subway or bus trip fits these limits.':`No eligible ${mode==='all'?'':mode+' '}route was found within your limits${state.preferences.requireLiveTransit?' and current live reports':''}. Walking limit: ${state.preferences.maxWalkingMinutes} min. Biking limit: ${state.preferences.maxBikingMinutes} min.`;list.innerHTML=`<div class="empty">${icon('sliders')}<h3>A little more room?</h3><p>${sheltered?'Allow a longer walk or check which transit modes and schedules you use.':'No reachable route fits these limits. Try more walking or biking time, another mode, or allow scheduled transit when live predictions are missing.'}</p><button class="primary" data-action="preferences">Adjust my limits</button></div>`;return;}
  list.innerHTML=routes.map((r,i)=>{const ride=r.legs.find(l=>l.mode!=='walk'),subtitle=ride?.mode==='bike'?`Bike to ${ride.to.name}`:ride?.line?`${ride.from.name} → ${ride.to.name}`:'Walk to your destination';return `<button class="route ${i===state.selected?'selected':''}" data-route="${i}" aria-label="${esc(routeTitle(r))}, ${mins(r.minutes)} minutes, ${money(r.fareCents)} estimated, ${mins(r.outdoorMinutes)} minutes outside. Open route."><div class="route-label"><span>${i===0?'BEST MATCH':'ANOTHER WAY'}</span><span class="quality ${r.dataQuality==='scheduled'?'scheduled':''}"><i></i>${r.dataQuality==='scheduled'?'Includes schedules':r.legs.some(l=>l.realtime)?'Live predictions':r.legs.some(l=>l.bikePickup)?'Live dock data':'Time estimate'}</span></div><div class="route-main"><div><div class="route-title">${esc(routeTitle(r))}</div><p class="route-subtitle">${esc(subtitle)}</p></div><div class="duration"><b>${mins(r.minutes)}</b><small>min</small></div></div><div class="mode-strip" aria-hidden="true">${r.legs.map((l,j)=>`${j?'<span class="mode-arrow">›</span>':''}<span class="mode-part">${l.line?lineBadges(l):icon(l.mode)}${mins(l.duration)}</span>`).join('')}</div><div class="route-bottom"><span><strong>${money(r.fareCents)}</strong> est. · ${mins(r.outdoorMinutes)} min outside</span><span>Arrive ${clock(r.arrivalTime)} ${icon('chevron')}</span></div>${i===state.selected?`<p class="route-insight">${esc(r.explanation)}</p>`:''}</button>`;}).join('');
 }
 function initMap(){
@@ -348,8 +364,8 @@ async function refreshDetail(){
  if(state.journey!==journey||journey.navigator)return;
  button.disabled=false;
  if(state.error){toast(state.error);return;}
- const current=[...(state.response?.routes||[]),...Object.values(state.response?.routeGroups||{}).flat()].find(r=>r.id===id);
- if(current)detail(resolveDeparture(current,state.response,departureSelections));
+ const current=currentRoutes().find(route=>route.id===id);
+ if(current)detail(current);
  else{closeJourney();toast('This connection changed. Choose a current route.');}
 }
 const countdown=time=>{const seconds=(Date.parse(time)-Date.now())/1000;return seconds< -30?'Departed':seconds<60?'Due':Math.ceil(seconds/60)+' min';};

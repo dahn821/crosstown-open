@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {FeedStore} from '../feeds.mjs';
-import {normalize,rank,validateRequest} from '../otp.mjs';
+import {normalize,rank,primaryTransitMode,validateRequest} from '../otp.mjs';
 import {subwayOptions,predictionSnapshot,corridorKey} from '../subway-options.mjs';
 import {walkingSpeed} from '../walking.mjs';
 
@@ -54,4 +54,31 @@ test('pinned trains cannot silently fall back to another train or to a schedule'
 test('opposite platforms and different access/dock stops remain separate corridors',()=>{
  const {raw}=fixture(),changed=structuredClone(raw);changed.legs[1].from.stop.gtfsId='nyct:D17N';
  assert.notEqual(corridorKey(raw),corridorKey(changed));
+});
+test('a slower path to the same train cannot replace the quickest complete trip',()=>{
+ const {raw,request,store,base}=fixture();
+ const slower=structuredClone(raw);
+ slower.legs.at(-1).duration+=120;
+ const pairs=[{raw,route:base},{raw:slower,route:normalize(slower,request,store)}];
+ const result=subwayOptions(pairs,request,store,{normalize,rank,primaryTransitMode});
+ assert.equal(result.primaries[0].minutes,base.minutes);
+ const sameTrain=Object.values(result.alternativeRoutes).find(route=>route.legs[1].tripId==='b1');
+ assert.equal(sameTrain.minutes,base.minutes);
+});
+test('changing trains on a mixed route preserves the chosen mode comparison',()=>{
+ const {now,raw,request,store}=fixture();
+ request.preferences.modes.push('bus');
+ const from=raw.legs[1].to,to={...from,stop:{gtfsId:'mta:503000'}};
+ raw.legs.splice(2,0,{mode:'BUS',duration:275,from,to,route:{shortName:'M1'}});
+ store.entries.set('bus',{sourceTimestamp:now,message:{entity:[{tripUpdate:{trip:{routeId:'M1',tripId:'bus'},stopTimeUpdate:[{stopId:'D20S',departure:{time:now/1000+1500}},{stopId:'503000',arrival:{time:now/1000+1775}}]}}]}});
+ const base=normalize(raw,request,store);
+ const result=subwayOptions([{raw,route:base}],request,store,{normalize,rank,primaryTransitMode});
+ assert(result.primaries[0].legs[1].lineOptions.some(option=>option.line==='D'));
+ for(const mode of ['subway','bus']){
+  const [route]=result.transitCandidates[mode];
+  assert(route);
+  assert.equal(primaryTransitMode(route),mode);
+  for(const id of route.alternativeIds)assert.equal(primaryTransitMode(result.alternativeRoutes[id]),mode);
+ }
+ assert.deepEqual(result.transitCandidates.bus[0].legs[1].lineOptions.map(option=>option.line),['D']);
 });
