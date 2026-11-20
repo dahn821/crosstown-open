@@ -1,4 +1,4 @@
-import {FeedStore,subwayFeeds} from './feeds.mjs';
+import {FeedStore,lineFeeds,subwayFeeds} from './feeds.mjs';
 import {createPlaceSearch} from './places.mjs';
 import {route,configureRoutingData,validateRequest} from './otp.mjs';
 import {createTransitousSearch} from './transitous.mjs';
@@ -72,11 +72,11 @@ export function createCommunityAPI({lookup,restaurants,busKey='',subwayShapeData
    const now=Date.now(),delay=retryAfter==null?30000:/^\d+$/.test(retryAfter)?Number(retryAfter)*1000:Date.parse(retryAfter)-now;
    pausedUntil=Math.max(pausedUntil,now+(Number.isFinite(delay)?Math.max(1000,delay):30000));
  }
- async function feeds(names=loaders.keys(),timeout=4500){
+ async function feeds(names=loaders.keys(),timeout=4500,minInterval=25000){
    const updates=[];
    for(const name of names){
      let job=activeFeeds.get(name);
-     if(!job&&Date.now()-(checkedAt.get(name)||0)>25000){
+     if(!job&&Date.now()-(checkedAt.get(name)||0)>minInterval){
        job=loaders.get(name)().finally(()=>{checkedAt.set(name,Date.now());activeFeeds.delete(name);});
        activeFeeds.set(name,job);
      }
@@ -96,7 +96,7 @@ export function createCommunityAPI({lookup,restaurants,busKey='',subwayShapeData
    if((pathname==='/api/ride'||pathname==='/api/vehicle-trip')&&request.method==='GET'){
      const tracking=pathname==='/api/vehicle-trip';
      const query=(tracking?vehicleTripQuery:rideQuery)(url.searchParams);
-     await feeds(tracking&&query.feed==='bus'?['bus','busVehicles']:[query.feed]);
+     await feeds(tracking&&query.feed==='bus'?['bus','busVehicles']:[query.feed],4500,tracking&&query.feed!=='bus'?15000:25000);
      return json(tracking?await vehicleTrip(store,query):ridePrediction(store,query));
    }
    if(pathname==='/api/health'&&request.method==='GET'){
@@ -135,7 +135,8 @@ export function createCommunityAPI({lookup,restaurants,busKey='',subwayShapeData
    if(['/api/bikes','/api/transit','/api/vehicles'].includes(pathname)&&request.method==='GET'){
      if(pathname==='/api/vehicles'){
        const query=vehicleQuery(url.searchParams);
-       await feeds([...(query.modes.includes('subway')?subwayFeeds:[]),...(query.modes.includes('bus')?['bus','busVehicles']:[])]);
+       const lineFeed=query.lines.length===1&&Object.hasOwn(lineFeeds,query.lines[0])?lineFeeds[query.lines[0]]:null;
+       await feeds([...(query.modes.includes('subway')?(lineFeed?[lineFeed]:subwayFeeds):[]),...(query.modes.includes('bus')?['bus','busVehicles']:[])],4500,query.board?15000:25000);
        return json(await vehicleResponse(store,query));
      }
      const coordinate={latitude:Number(url.searchParams.get('lat')),longitude:Number(url.searchParams.get('lon'))};

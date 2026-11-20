@@ -1,6 +1,6 @@
 import {icon} from './icons.mjs';
 import {subwayBullet,subwayStyle} from './subway-ui.mjs';
-import {liveTimeMarkup,updateLiveTimes} from './transit-arrivals.mjs';
+import {liveTimeMarkup,subwayArrivalLabel,updateLiveTimes} from './transit-arrivals.mjs';
 
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const point=coordinate=>[coordinate.latitude,coordinate.longitude];
@@ -157,7 +157,8 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect,openL
     return `<button class="${className}" data-track-trip="${esc(row.trackingId)}" title="Follow ${esc(row.line)}">${bullet}${time}</button>`;
   }
   function renderBoard(){
-    const rows=(data?.departures||[]).filter(d=>(!selectedLine||(view==='bus'?normalizeLine(d.line)===normalizeLine(selectedLine):d.line===selectedLine))&&Date.parse(d.departureTime)>=Date.now());
+    const rows=(data?.departures||[]).filter(d=>(!selectedLine||(view==='bus'?normalizeLine(d.line)===normalizeLine(selectedLine):d.line===selectedLine))&&
+      (view==='subway'||Date.parse(d.departureTime)>=Date.now()));
     for(const row of rows)linesSeen[view].add(row.line);
     const fallback=[...new Map(rows.map(row=>[stationID(row),{...row.stop,id:stationID(row),metersAway:row.metersAway}])).values()];
     const stations=data?.stations??fallback.sort((a,b)=>a.metersAway-b.metersAway).slice(0,4);
@@ -171,7 +172,8 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect,openL
     renderStops();
     const blocked=view==='bus'&&data?.feedStatus?.bus?.configured===false;
     const stale=data&&(view==='bus'?data.feedStatus.bus.stale:data.feedStatus.subway.every(feed=>feed.stale));
-    const timing=active?rows.filter(item=>stationID(item)===active.id):[];
+    const timing=active?rows.filter(item=>stationID(item)===active.id&&
+      (view!=='subway'||subwayArrivalLabel(item,vehicles.findTrip(item.trackingId))!=null)):[];
     vehicles.setStationPredictions(view==='subway'&&!stale?timing:[]);
     const arrivals=view==='subway'?subwayTimes(timing):busTimes(timing);
     const empty=active?'No live arrivals reported at this stop.':data?
@@ -186,6 +188,7 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect,openL
   }
   async function refresh(){
     if(view==='directions'||tracking||document.hidden)return;
+    if(view==='subway'){vehicles.refresh();return;}
     pending?.abort();
     const controller=new AbortController();pending=controller;
     const center=showingTransit()?map.containerPointToLatLng(targetPoint()):map.getCenter();
@@ -248,8 +251,8 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect,openL
     if(button.dataset.selectLine){changeLine(button.dataset.selectLine);return;}
     if(button.dataset.trackTrip){
       const row=data?.departures?.find(item=>item.trackingId===button.dataset.trackTrip&&stationID(item)===selectedStop);
-      if(row)onSelect(vehicles.findTrip(row.trackingId)||{...row,coordinate:row.stop.coordinate,
-        accuracy:'arrival-only',status:`Forecast at ${row.stop.name}`,directionLabel:row.direction,reportedAt:row.predictionReportedAt});
+      if(row)onSelect(vehicles.findTrip(row.trackingId)||{...row,accuracy:'arrival-only',
+        status:`Estimated arrival at ${row.stop.name}`,directionLabel:row.direction,reportedAt:row.predictionReportedAt});
       return;
     }
     if(button.hasAttribute('data-live-toggle'))showExpanded(detail.hidden);
@@ -276,10 +279,16 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect,openL
   setInterval(refresh,30000);
   setInterval(()=>{
     if(view==='bike'||view==='directions'||document.hidden||detail.hidden)return;
-    updateLiveTimes(body,vehicles.findTrip);
+    if(updateLiveTimes(body,vehicles.findTrip)&&view==='subway')renderBoard();
   },1000);
 
   return {
+    subwayBoardQuery(){
+      if(view!=='subway'||tracking||dragging)return null;
+      const center=map.containerPointToLatLng(targetPoint());
+      const {latitude,longitude}=focused?.coordinate??{latitude:center.lat,longitude:center.lng};
+      return {lat:latitude.toFixed(4),lon:longitude.toFixed(4),...(focused?{stop:focused.id}:{})};
+    },
     setTracking(value){
       tracking=value;
       if(tracking){pending?.abort();pending=null;clearTimeout(moveTimer);vehicles.setStationPredictions([]);}
@@ -328,7 +337,11 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect,openL
       const qty=result?.vehicles?.length??0,bus=view==='bus';
       status.textContent=result?(bus&&result.feedStatus.busVehicles?.stale?'Bus GPS unavailable':bus?
         `${qty} GPS positions${result.truncated?' · zoom in':''}${selectedLine&&!corridors.size?' · Route path unavailable':''}`:'Estimated from live train reports'):'Vehicle reports unavailable';
-      renderStops();
+      if(view==='subway'&&!tracking&&!dragging){
+        data=result?.board??null;
+        failure=result?'':'Subway reports unavailable here.';
+        renderBoard();
+      }else renderStops();
     }
   };
 }

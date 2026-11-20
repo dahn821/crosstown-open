@@ -38,13 +38,18 @@ public actor LiveRoutingClient {
         if !includeFeeds { components.queryItems = [URLQueryItem(name: "feeds", value: "0")] }
         return try await fetch(URLRequest(url: components.url!), as: LiveHealth.self)
     }
-    public func vehicles(bounds: [Double], lines: [String] = [], mode: TravelMode? = nil) async throws -> VehicleSnapshot {
+    public func vehicles(bounds: [Double], lines: [String] = [], mode: TravelMode? = nil, near station: Coordinate? = nil, stop: String? = nil) async throws -> VehicleSnapshot {
         var components = URLComponents(url: endpoint("vehicles"), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "bbox", value: bounds.map { String($0) }.joined(separator: ","))]
         if !lines.isEmpty { components.queryItems?.append(URLQueryItem(name: "lines", value: lines.joined(separator: ","))) }
         if let mode { components.queryItems?.append(URLQueryItem(name: "modes", value: mode.rawValue)) }
         if mode == .subway || (mode == .bus && lines.count == 1) {
             components.queryItems?.append(URLQueryItem(name: "network", value: "1"))
+        }
+        if mode == .subway, let station {
+            components.queryItems?.append(URLQueryItem(name: "lat", value: String(station.latitude)))
+            components.queryItems?.append(URLQueryItem(name: "lon", value: String(station.longitude)))
+            if let stop { components.queryItems?.append(URLQueryItem(name: "stop", value: stop)) }
         }
         return try await fetch(URLRequest(url: components.url!), as: VehicleSnapshot.self)
     }

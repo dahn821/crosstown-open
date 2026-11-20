@@ -268,10 +268,10 @@ public struct TransitDeparture: Codable, Identifiable, Sendable {
     public var predictionReportedAt: String
     public var platformID: String { stop.id.split(separator: ":").last.map(String.init) ?? stop.id }
 
-    public func countdown(vehicle: LiveVehicle? = nil, now: Date) -> String {
+    public func countdown(vehicle: LiveVehicle? = nil, now: Date) -> String? {
         if mode == .subway {
             return TransitArrival.subwayLabel(arrival: arrivalTime, departure: departureTime, trackingId: trackingId,
-                platform: platformID, isNextStop: isNextStop != false, vehicle: vehicle, now: now)
+                platform: platformID, isNextStop: isNextStop != false, reportedAt: predictionReportedAt, vehicle: vehicle, now: now)
         }
         return TransitArrival.label(arrival: arrivalTime, departure: departureTime, now: now)
     }
@@ -290,9 +290,14 @@ public enum TransitArrival {
     }
 
     public static func subwayLabel(arrival: String?, departure: String, trackingId: String?, platform: String,
-                                   isNextStop: Bool, vehicle: LiveVehicle?, now: Date) -> String {
-        let matching = isNextStop && trackingId != nil && vehicle?.trackingId == trackingId
+                                   isNextStop: Bool, reportedAt: String? = nil, vehicle: LiveVehicle?, now: Date) -> String? {
+        let seen = reportedAt.flatMap(date)
+        if let seen, !(-30...90).contains(now.timeIntervalSince(seen)) { return nil }
+        let sameTrain = trackingId != nil && vehicle?.trackingId == trackingId
+        let matching = isNextStop && sameTrain
             && vehicle?.nextStop?.stopId == platform && vehicle?.positionReport?.stopId == platform
+        if isNextStop, sameTrain, !matching, let seen, let vehicle,
+           vehicle.nextStop != nil, vehicle.reportedDate > seen { return nil }
         if matching, let vehicle {
             if vehicle.isDue(for: platform, at: now) { return "Due" }
             if let report = vehicle.positionReport, report.accuracy == "reported-stop",
@@ -300,13 +305,15 @@ public enum TransitArrival {
                 return "At station"
             }
         }
-        if !matching, let leaves = date(departure), leaves < now { return "Departed" }
+        let departureTime = matching ? vehicle?.nextStop?.departureTime ?? departure : departure
+        if let leaves = date(departureTime), leaves < now { return nil }
         let motion = matching ? vehicle?.motion : nil
-        let arrives = motion?.toStopId == platform
-            ? motion.map { Date(timeIntervalSince1970: $0.arrivesAt / 1000) }
-            : date(arrival ?? departure)
-        guard let arrives, arrives > now else { return "Updating" }
-        return "\(Int(ceil(arrives.timeIntervalSince(now) / 60))) min"
+        let arrives: Date?
+        if let motion, motion.toStopId == platform, motion.expiresAt >= now.timeIntervalSince1970 * 1000 {
+            arrives = Date(timeIntervalSince1970: motion.arrivesAt / 1000)
+        } else { arrives = date(arrival ?? departure) }
+        guard let arrives, arrives > now else { return nil }
+        return "\(max(1, Int((arrives.timeIntervalSince(now) / 60).rounded()))) min"
     }
 }
 public struct TransitStation: Codable, Identifiable, Sendable {
@@ -388,13 +395,17 @@ public struct TrainMotion: Codable, Sendable {
     public var arrivesAt: Double
     public var expiresAt: Double
     public var points: [[Double]]
+    public var startDistance: Double? = nil
+    public var stopOffset: Double? = nil
 
     public func location(at now: Date) -> (coordinate: Coordinate, bearing: Double)? {
         let milliseconds = now.timeIntervalSince1970 * 1000
         guard milliseconds <= expiresAt, arrivesAt > startedAt, points.count >= 2,
               let last = points.last, last.count == 3 else { return nil }
         let progress = min(1, max(0, (milliseconds - startedAt) / (arrivesAt - startedAt)))
-        let distance = progress * last[2]
+        let endDistance = last[2] - (stopOffset ?? 0)
+        let start = min(endDistance, startDistance ?? 0)
+        let distance = start + progress * (endDistance - start)
         let end = points.indices.dropFirst().first { points[$0].count == 3 && points[$0][2] >= distance } ?? points.count - 1
         let a = points[end - 1], b = points[end]
         guard a.count == 3, b.count == 3 else { return nil }
@@ -459,6 +470,7 @@ public struct VehicleSnapshot: Codable, Sendable {
     public var totalInView: Int
     public var notice: String
     public var network: TransitNetwork? = nil
+    public var board: TransitDepartures? = nil
 }
 public struct TransitNetwork: Codable, Sendable {
     public struct Segment: Codable, Sendable {

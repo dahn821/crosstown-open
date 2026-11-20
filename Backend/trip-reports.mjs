@@ -1,3 +1,7 @@
+import bindings from 'gtfs-realtime-bindings';
+
+export const vehicleStopStatus=bindings.transit_realtime.VehiclePosition.VehicleStopStatus;
+
 const time=value=>{
   const seconds=Number(value?.toString());
   return Number.isFinite(seconds)&&seconds>0?seconds*1000:null;

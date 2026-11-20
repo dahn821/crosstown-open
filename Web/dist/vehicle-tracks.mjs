@@ -67,8 +67,8 @@ export function attachVehicleTracking({map,L,api,findTrip,onChange,onReport}){
       list.innerHTML=trip.stops.map((stop,index)=>{
         const time=Date.parse(stop.arrivalTime??stop.departureTime);
         const note=[index===0?'Next stop':null,Number.isFinite(time)?clock.format(time):null].filter(Boolean).join(' · ');
-        const call={...stop,mode:trip.mode,trackingId:trip.id,stopId:stop.id,isNextStop:index===0};
-        return `<li><span class="tracker-stop-dot" aria-hidden="true"></span><span><strong>${esc(stop.name)}</strong><small>${note}</small></span>${Number.isFinite(time)?liveTimeMarkup(call,vehicle):'<small>Awaiting report</small>'}</li>`;
+        const call={...stop,mode:trip.mode,trackingId:trip.id,stopId:stop.id,isNextStop:index===0,predictionReportedAt:trip.reportedAt};
+        return `<li><span class="tracker-stop-dot" aria-hidden="true"></span><span><strong>${esc(stop.name)}</strong><small>${note}</small></span>${Number.isFinite(time)?liveTimeMarkup(call,vehicle):'<small>—</small>'}</li>`;
       }).join('');
       list.scrollTop=scroll;
     }
@@ -88,7 +88,7 @@ export function attachVehicleTracking({map,L,api,findTrip,onChange,onReport}){
     }catch(error){
       if(controller!==request||error.name==='AbortError')return;
       const age=Date.now()-Date.parse(lastGood?.reportedAt);
-      if(age>=0&&age<=180000)message.textContent='Last MTA predictions · Reconnecting';
+      if(age>=0&&age<=180000)message.textContent='Last live report · Reconnecting';
       else{
         onReport(null);
         render({status:'unavailable'});

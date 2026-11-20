@@ -81,7 +81,7 @@ test('subway exploration ranks the nearest station complexes before considering 
    [id+direction,{name,latitude:center.latitude+delta,longitude:center.longitude,parent:id}])));
  const store=new FeedStore({tripIndex:{stops,routes:{6:{route_color:'009952'},7:{route_color:'B933AD'}}},stationStructures:structures});
  const entity=[['6','C1N',30],['6','C1S',10],['7','C2S',20],['7','A4N',40]].map(([line,stopId,age],i)=>({
-   vehicle:{trip:{routeId:line,tripId:'trip'+i},stopId,timestamp:Math.floor(now/1000)-age,currentStatus:2}
+   vehicle:{trip:{routeId:line,tripId:'trip'+i},stopId,timestamp:Math.floor(now/1000)-age,currentStatus:1}
  }));
  store.entries.set('gtfs',{sourceTimestamp:now,message:{entity}});
  const board=nearbySubwayBoard(store,center,{},now);

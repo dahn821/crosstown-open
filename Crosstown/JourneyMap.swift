@@ -11,6 +11,9 @@ struct JourneyMap: View {
     var showsLiveVehicles = false
     var busStops: [Place] = []
     var selectedLine = ""
+    var boardLocation: Coordinate? = nil
+    var boardStop: String? = nil
+    var refreshRequest = 0
     var highlightedStations: Set<String> = []
     var stationPredictions: [TransitDeparture] = []
     var onCenterChange: ((Coordinate) -> Void)? = nil
@@ -49,7 +52,11 @@ struct JourneyMap: View {
     }
     private var routeLines: [String] { selectedLine.isEmpty ? [] : [selectedLine] }
     private var vehiclesEnabled: Bool { liveMode != nil || showsLiveVehicles }
-    private var queryID: String { (vehiclesEnabled ? apiBaseURLString ?? "" : "") + (liveMode?.rawValue ?? "") + queryBounds.map { String($0) }.joined(separator: ",") + routeLines.joined(separator: ",") }
+    private var queryID: String {
+        [vehiclesEnabled ? apiBaseURLString ?? "" : "", liveMode?.rawValue ?? "",
+         queryBounds.map { String($0) }.joined(separator: ","), selectedLine, boardStop ?? "",
+         boardLocation.map { "\($0.latitude),\($0.longitude)" } ?? "", String(refreshRequest)].joined(separator: "|")
+    }
     var body: some View {
         TimelineView(.periodic(from: .now, by: vehiclesEnabled && liveMode != .bus && !reduceMotion ? 0.25 : 1)) { context in
         Map(position: Binding(get: { camera ?? .region(region) }, set: { camera = $0 }), interactionModes: [.pan, .zoom]) {
@@ -148,7 +155,8 @@ struct JourneyMap: View {
             do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
             while !Task.isCancelled {
                 do {
-                    let result = try await client.vehicles(bounds: queryBounds, lines: routeLines, mode: liveMode)
+                    let result = try await client.vehicles(bounds: queryBounds, lines: routeLines, mode: liveMode,
+                                                           near: boardLocation, stop: boardStop)
                     guard !Task.isCancelled else { return }
                     snapshot = result; vehicleError = nil
                     onVehicleSnapshot?(result)
@@ -202,8 +210,7 @@ struct JourneyMap: View {
     }
     private func vehicleGroups(at now: Date) -> [VehicleGroup] {
         Dictionary(grouping: visibleVehicles(at: now)) { vehicle in
-            guard vehicle.mode == .subway else { return vehicle.id }
-            if let motion = vehicle.motion, now.timeIntervalSince1970 * 1000 < motion.arrivesAt { return vehicle.id }
+            guard vehicle.mode == .subway && vehicle.accuracy == "reported-stop" else { return vehicle.id }
             let latitude = (vehicle.coordinate.latitude * 100000).rounded()
             let longitude = (vehicle.coordinate.longitude * 100000).rounded()
             return "\(latitude),\(longitude)"
@@ -270,7 +277,8 @@ struct JourneyMap: View {
         let positions = (snapshot?.vehicles ?? []) + [trackedTrip?.position].compactMap { $0 }
         for var vehicle in positions where liveMode == nil || vehicle.mode == liveMode {
             if vehicle.accuracy == "prediction-stop" {
-                guard let position = vehicle.positionReport, let seen = TransitArrival.date(position.reportedAt) else { continue }
+                guard let position = vehicle.positionReport, position.accuracy == "reported-stop",
+                      let seen = TransitArrival.date(position.reportedAt) else { continue }
                 vehicle.accuracy = position.accuracy; vehicle.coordinate = position.coordinate
                 vehicle.stopName = position.stopName; vehicle.reportedAt = position.reportedAt
                 vehicle.reportedAtSeconds = seen.timeIntervalSince1970
@@ -279,7 +287,7 @@ struct JourneyMap: View {
             }
             if now.timeIntervalSince(vehicle.reportedDate) <= (vehicle.accuracy == "prediction-stop" ? 180 : 90) {
                 let id = vehicle.trackingId ?? vehicle.id
-                if reports[id]?.reportedDate ?? .distantPast <= vehicle.reportedDate { reports[id] = vehicle }
+                if reports[id]?.reportedDate ?? .distantPast < vehicle.reportedDate { reports[id] = vehicle }
             }
         }
         return reports.values.map { vehicle in
@@ -466,10 +474,10 @@ private struct VehicleReportView: View {
         }
     }
     private func countdown(_ stop: VehicleTrip.Stop, first: Bool, at now: Date) -> String {
-        guard let departure = stop.departureTime else { return "Awaiting report" }
+        guard let departure = stop.departureTime else { return "—" }
         if vehicle.mode == .subway {
             return TransitArrival.subwayLabel(arrival: stop.arrivalTime, departure: departure, trackingId: vehicle.trackingId,
-                platform: stop.id, isNextStop: first, vehicle: vehicle, now: now)
+                platform: stop.id, isNextStop: first, reportedAt: trip?.reportedAt, vehicle: vehicle, now: now) ?? "—"
         }
         return TransitArrival.label(arrival: stop.arrivalTime, departure: departure, now: now)
     }

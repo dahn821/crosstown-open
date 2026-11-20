@@ -132,7 +132,8 @@ function initMap(){
    vehicleTracking.select(vehicle);
  };
  vehicleMap=attachVehicleMap({map,L,api,getRoute:()=>state.journey?.route||currentRoutes()[state.selected],
-   onSelect:selectVehicle,onSnapshot:(view,result)=>liveExplore?.vehicleReport(view,result)});
+   onSelect:selectVehicle,onSnapshot:(view,result)=>liveExplore?.vehicleReport(view,result),
+   getSubwayBoard:()=>liveExplore?.subwayBoardQuery()});
  liveExplore=attachLiveExplore({map,L,api,vehicles:vehicleMap,getLocation:()=>state.origin?.coordinate,onSelect:selectVehicle,openLineSheet:(title,body)=>{
    state.modal={type:'line'};openSheet(title,body);return sheet;
  }});

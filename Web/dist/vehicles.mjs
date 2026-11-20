@@ -4,7 +4,7 @@ import {platformID,trainIsDue,vehicleReports,vehicleSource} from './transit-arri
 import {sampleTrack} from './track-position.mjs';
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const color=v=>/^[0-9a-f]{6}$/i.test(v.routeColor)?'#'+v.routeColor:v.mode==='bus'?'#2d5bff':'#25815f';
-export function attachVehicleMap({map,L,api,getRoute,onSelect,onSnapshot=()=>{}}){
+export function attachVehicleMap({map,L,api,getRoute,onSelect,onSnapshot=()=>{},getSubwayBoard=()=>null}){
   const layer=L.layerGroup().addTo(map),markers=new Map(),control=document.createElement('section');
   control.className='vehicle-map-control';control.setAttribute('aria-label','Live vehicle map layers');
   control.innerHTML=`<button class="vehicle-layer-title" aria-expanded="false">${icon('activity')} Live vehicles <span>⌄</span></button><div class="vehicle-layer-options" hidden><label><input type="checkbox" name="bus">Bus GPS</label><label><input type="checkbox" name="subway">Train station reports and estimates</label><label><input type="checkbox" name="routeOnly">Selected route lines</label><p>Tap a vehicle to follow its upcoming stops.</p></div><p class="vehicle-map-status" role="status">Off</p><button class="vehicle-expand" hidden>Expand live map</button>`;
@@ -61,7 +61,7 @@ export function attachVehicleMap({map,L,api,getRoute,onSelect,onSnapshot=()=>{}}
       const {latitude,longitude}=vehicle.coordinate;
       let cell=vehicle.id;
       if(vehicle.mode==='subway'){
-        if(!vehicle.motion||now>=vehicle.motion.arrivesAt)cell=`station/${latitude.toFixed(5)}/${longitude.toFixed(5)}`;
+        if(vehicle.accuracy==='reported-stop')cell=`station/${latitude.toFixed(5)}/${longitude.toFixed(5)}`;
       }else if(map.getZoom()<15){
         const p=map.latLngToContainerPoint([latitude,longitude]);
         cell=`bus/${Math.floor(p.x/35)}/${Math.floor(p.y/35)}`;
@@ -98,7 +98,7 @@ export function attachVehicleMap({map,L,api,getRoute,onSelect,onSnapshot=()=>{}}
     const now=Date.now();
     const current=snapshot?.vehicles||[];
     const currentReport=trackingReport&&current.find(v=>v.trackingId===trackingReport.trackingId);
-    const positions=trackingReport&&(!currentReport||trackingReport.mode==='subway'||Date.parse(currentReport.reportedAt)<Date.parse(trackingReport.reportedAt))?
+    const positions=trackingReport&&(!currentReport||Date.parse(currentReport.reportedAt)<Date.parse(trackingReport.reportedAt))?
       [...current.filter(v=>v.trackingId!==trackingReport.trackingId),trackingReport]:current;
     reports=vehicleReports(positions,now).filter(v=>modeEnabled(v.mode))
       .map(v=>({...v,due:Boolean(view==='subway'&&stationTrains.get(v.trackingId)?.has(v.nextStop?.stopId)&&trainIsDue(v,v.nextStop.stopId,now))}));
@@ -143,6 +143,7 @@ export function attachVehicleMap({map,L,api,getRoute,onSelect,onSnapshot=()=>{}}
     const route=getRoute(),lines=[...new Set(route?.legs.map(l=>l.line).filter(Boolean)||[])];
     const routeOnly=control.querySelector('[name="routeOnly"]');routeOnly.disabled=!lines.length;
     if(view==='subway'||view==='bus'&&line)params.set('network','1');
+    if(view==='subway')for(const [key,value] of Object.entries(getSubwayBoard()??{}))params.set(key,value);
     if(view!=='directions'&&line)params.set('lines',line);
     else if(view==='directions'&&routeOnly.checked&&lines.length)params.set('lines',lines.join(','));
     const query=params.toString(),now=Date.now();

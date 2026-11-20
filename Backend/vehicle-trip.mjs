@@ -52,9 +52,9 @@ function subwayTrip(store,query,entity,entry,now){
   const direction=subwayDirection(train.target,store.subwayCatalog.metadata.get(stationStopID(train.target)));
   const routeColor=store.tripIndex.routes?.[line]?.route_color||null,reportedAt=iso(observedAt);
   const heading=vehicleDirection(vehicle,update,store.tripIndex.stops);
-  const position={id:query.id,trackingId:query.id,mode:'subway',line,routeColor,...marker,nextStop,motion,positionReport:raw,
+  const position=marker?{id:query.id,trackingId:query.id,mode:'subway',line,routeColor,...marker,nextStop,motion,positionReport:raw,
     bearing:bearing??heading.bearing,bearingSource:bearing==null?heading.bearingSource:'estimated-track',directionLabel:direction,
-    reportedAtSeconds:observedAt/1000,sourceTimestamp:iso(entry.sourceTimestamp),source:'MTA subway vehicle reports'};
+    reportedAtSeconds:observedAt/1000,sourceTimestamp:iso(entry.sourceTimestamp),source:'MTA subway vehicle reports'}:null;
   return {status:'live',id:query.id,mode:'subway',line,routeColor,stops,segments,direction,position,reportedAt,
     estimateSource:'vehicle-reports'};
 }

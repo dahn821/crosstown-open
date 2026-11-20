@@ -1,7 +1,8 @@
 import {busID,busLineName,lineFeeds,subwayFeeds} from './feeds.mjs';
 import {busLineNetwork} from './bus-trip-shapes.mjs';
-import {canceledTrip,findTripUpdate,indexTripUpdates,positionReportTime,trackingId} from './trip-reports.mjs';
+import {canceledTrip,findTripUpdate,indexTripUpdates,positionReportTime,trackingId,vehicleStopStatus} from './trip-reports.mjs';
 import {liveTrain,trainPosition} from './subway-live.mjs';
+import {nearbySubwayBoard,stationRadius} from './subway-stations.mjs';
 
 const nyc=[-74.27,40.48,-73.67,40.94];
 const number=value=>value==null?NaN:Number(value.toString());
@@ -28,7 +29,14 @@ export function vehicleQuery(params){
   if(!modes.length||modes.some(m=>!['bus','subway'].includes(m)))throw error('Choose bus or subway map layers.');
   const lines=(params.get('lines')||'').split(',').map(s=>s.trim()).filter(Boolean);
   if(lines.length>40||lines.some(l=>l.length>30||!/^[a-z0-9+ -]+$/i.test(l)))throw error('Choose valid transit lines.');
-  return {bounds,modes,lines,network:params.get('network')==='1'&&(modes.includes('subway')||(modes.includes('bus')&&lines.length===1))};
+  let board;
+  if(params.has('lat')||params.has('lon')){
+    const latitude=Number(params.get('lat')),longitude=Number(params.get('lon')),stop=params.get('stop');
+    if(modes.length!==1||modes[0]!=='subway'||!params.has('lat')||!params.has('lon')||
+      !Number.isFinite(latitude)||!Number.isFinite(longitude)||stop?.length>100)throw error('Choose a valid subway board location.');
+    board={coordinate:{latitude,longitude},stop,line:lines.length===1?lines[0]:undefined};
+  }
+  return {bounds,modes,lines,board,network:params.get('network')==='1'&&(modes.includes('subway')||(modes.includes('bus')&&lines.length===1))};
 }
 function subwayNetwork(updates,store,lines,bounds,segments,stations,missing){
   const index=store.tripIndex,catalog=store.subwayCatalog;
@@ -68,7 +76,7 @@ export function reportedPosition(store,mode,vehicle,measured){
   if(mode==='bus')return null;
   const stop=store.tripIndex.stops?.[stopId];
   if(!stop)return null;
-  const stopped=Object.hasOwn(vehicle,'currentStatus')&&vehicle.currentStatus===2;
+  const stopped=vehicle.currentStatus===vehicleStopStatus.STOPPED_AT;
   return {accuracy:stopped?'reported-stop':'next-stop',coordinate:{latitude:stop.latitude,longitude:stop.longitude},
     stopId,stopName:stop.name,reportedAt,status:stopped?`Reported at ${stop.name}`:`Heading toward ${stop.name}`};
 }
@@ -103,12 +111,12 @@ export function vehicleSnapshot(store,{bounds=nyc,modes=['bus','subway'],lines=[
       const measured=positionReportTime(v,now);
       if(measured==null)continue;
       const update=match?.tripUpdate,ref=trackingId(predictionFeed,update?.trip||trip);
-      const positionReport=reportedPosition(store,mode,v,measured);
-      if(!positionReport)continue;
       const train=mode==='subway'&&liveTrain(store,feed,ref,now);
-      const tracked=train?trainPosition(store,train,positionReport,now):{position:positionReport};
+      const positionReport=reportedPosition(store,mode,train?.vehicle||v,train?.observedAt??measured);
+      if(!positionReport)continue;
+      const tracked=train?trainPosition(store,train,positionReport,now):{position:positionReport.accuracy==='next-stop'?null:positionReport};
       const {position:marker,nextStop,motion,bearing}=tracked;
-      if(!inside(marker.coordinate))continue;
+      if(!marker||!inside(marker.coordinate))continue;
       const id=[feed,v.vehicle?.id||trip.tripId||entity.id,trip.startDate||''].join('|');
       const direction=vehicleDirection(v,mode==='subway'?update:null,store.tripIndex.stops);
       const row={id,mode,line,trackingId:ref,...marker,nextStop,motion,positionReport,...direction,
@@ -127,7 +135,14 @@ export function vehicleSnapshot(store,{bounds=nyc,modes=['bus','subway'],lines=[
 }
 
 export async function vehicleResponse(store,query){
-  const result=vehicleSnapshot(store,query);
+  const now=query.now??Date.now(),result=vehicleSnapshot(store,{...query,now});
+  if(query.board){
+    const {coordinate,stop,line}=query.board;
+    const {latitude,longitude}=coordinate;
+    const board=latitude<nyc[1]||latitude>nyc[3]||longitude<nyc[0]||longitude>nyc[2]?
+      {stations:[],departures:[]}:nearbySubwayBoard(store,coordinate,{stop,line},now);
+    result.board={...board,feedStatus:result.feedStatus,generatedAt:result.generatedAt,radiusMeters:stationRadius};
+  }
   if(query.network&&query.modes.length===1&&query.modes[0]==='bus'&&query.lines.length===1){
     result.network=await busLineNetwork(store,query.lines[0]);
   }

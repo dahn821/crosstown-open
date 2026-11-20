@@ -32,7 +32,7 @@ test('subway Due requires the exact approaching vehicle, next platform, and unde
   const minuteAway={...train,motion:{...motion,arrivesAt:now+60000}};
   assert(!trainIsDue(minuteAway,'A31N',now));
   assert.equal(subwayArrivalLabel(board,minuteAway,now),'1 min');
-  const twoMinutesAway={...train,motion:{...motion,arrivesAt:now+85000}};
+  const twoMinutesAway={...train,motion:{...motion,arrivesAt:now+95000}};
   assert.equal(subwayArrivalLabel(board,twoMinutesAway,now),'2 min');
 });
 
@@ -40,7 +40,7 @@ test('stale, elapsed, and stationary reports do not mark trains Due',()=>{
   const stale={...train,positionReport:{...train.positionReport,reportedAt:at(-65)}};
   assert(!trainIsDue(stale,'A31N',now));
   assert.equal(subwayArrivalLabel(board,stale,now),'1 min');
-  assert.equal(subwayArrivalLabel(board,train,now+30000),'Updating');
+  assert.equal(subwayArrivalLabel(board,train,now+30000),null);
   const atPlatform={...train,motion:null,accuracy:'reported-stop',positionReport:{...train.positionReport,accuracy:'reported-stop'}};
   assert.equal(subwayArrivalLabel(board,atPlatform,now),'At station');
   assert(!trainIsDue(atPlatform,'A31N',now));
@@ -53,6 +53,8 @@ test('the marker follows the real track and never appears from a board row alone
   assert(moving.coordinate.latitude>40.75);
   assert.notDeepEqual(moving.coordinate,platform);
   assert.deepEqual(sampleTrack(motion,now+42000).coordinate,platform);
+  const approach={...motion,stopOffset:25,startDistance:400};
+  assert(sampleTrack(approach,now+42000).coordinate.latitude<platform.latitude);
   assert.equal(sampleTrack(motion,now+91000),null);
   assert.deepEqual(vehicleReports([train],now+90000),[]);
 });

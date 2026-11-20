@@ -19,7 +19,7 @@ final class LiveModelsTests: XCTestCase {
           "nextStop":{"stopId":"A31N","name":"14 St","coordinate":{"latitude":40.74,"longitude":-74.0},
             "departureTime":"\(now.addingTimeInterval(55).ISO8601Format())","reportedAt":"\(reported)"},
           "motion":{"fromStopId":"A32N","toStopId":"A31N","startedAt":1799999970000,"arrivesAt":1800000030000,"expiresAt":1800000075000,
-            "points":[[40.73,-74,0],[40.74,-74,1100]]}
+            "stopOffset":25,"points":[[40.73,-74,0],[40.74,-74,1100]]}
         }
         """.utf8))
         let arrival = now.addingTimeInterval(30).ISO8601Format(), departure = now.addingTimeInterval(55).ISO8601Format()
@@ -30,6 +30,11 @@ final class LiveModelsTests: XCTestCase {
         XCTAssertEqual(TransitArrival.subwayLabel(arrival: arrival, departure: departure, trackingId: "other", platform: "A31N",
             isNextStop: true, vehicle: vehicle, now: now), "1 min")
         XCTAssertFalse(vehicle.isDue(for: "A31N", at: now.addingTimeInterval(30)))
+        let estimatedArrival = now.addingTimeInterval(30)
+        XCTAssertNil(TransitArrival.subwayLabel(arrival: arrival, departure: departure, trackingId: "t", platform: "A31N",
+            isNextStop: true, reportedAt: reported, vehicle: vehicle, now: estimatedArrival))
+        let approach = try XCTUnwrap(vehicle.motion?.location(at: estimatedArrival))
+        XCTAssertLessThan(approach.coordinate.latitude, 40.74)
     }
     // Captured from the real service; test resources are never loaded by either app.
     private func capturedPlan() throws -> PlanResponse {

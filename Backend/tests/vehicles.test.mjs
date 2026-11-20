@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {FeedStore} from '../feeds.mjs';
 import {vehicleQuery,vehicleSnapshot,vehicleResponse,vehicleDirection} from '../vehicles.mjs';
 import {vehicleTrip,vehicleTripQuery} from '../vehicle-trip.mjs';
-import {trackingId} from '../trip-reports.mjs';
+import {trackingId,vehicleStopStatus} from '../trip-reports.mjs';
 import {busTripSegments} from '../bus-trip-shapes.mjs';
 import {nearbySubwayBoard} from '../subway-stations.mjs';
 const now=Date.now(),seconds=Math.floor(now/1000);
@@ -29,7 +29,7 @@ test('train headings can match an unambiguous same-trip update without a vehicle
 function store(){
  const result=new FeedStore({busKey:'test-only',tripIndex:{stops:{'632N':{name:'33 St',latitude:40.746,longitude:-73.982}},routes:{6:{route_color:'00933C'}}}});
  result.entries.set('busVehicles',{sourceTimestamp:now,message:{entity:[{id:'bus',vehicle:{trip:{tripId:'bus-trip',routeId:'MTA NYCT_M34+'},vehicle:{id:'123'},timestamp:seconds,position:{latitude:40.75,longitude:-73.99,bearing:90}}}]}});
- result.entries.set('gtfs',{sourceTimestamp:now,message:{entity:[{id:'train',vehicle:{trip:{tripId:'train-trip',routeId:'6'},timestamp:seconds,currentStatus:2,stopId:'632N'}}]}});
+ result.entries.set('gtfs',{sourceTimestamp:now,message:{entity:[{id:'train',vehicle:{trip:{tripId:'train-trip',routeId:'6'},timestamp:seconds,currentStatus:1,stopId:'632N'}}]}});
  return result;
 }
 test('bus markers preserve measured GPS while subway markers explicitly use station reports',()=>{
@@ -39,10 +39,14 @@ test('bus markers preserve measured GPS while subway markers explicitly use stat
  assert.deepEqual(train.coordinate,{latitude:40.746,longitude:-73.982});assert.equal(train.accuracy,'reported-stop');assert.match(train.status,/Reported at 33 St/);
  assert.equal(train.reportedAtSeconds,seconds);assert.equal(train.routeColor,'00933C');
 });
-test('trains in transit point to their next station without fabricated between-station coordinates',()=>{
- const s=store();s.entries.get('gtfs').message.entity[0].vehicle.currentStatus=1;
- const train=vehicleSnapshot(s,{now}).vehicles.find(v=>v.mode==='subway');
- assert.equal(train.accuracy,'next-stop');assert.equal(train.status,'Heading toward 33 St');assert.deepEqual(train.coordinate,{latitude:40.746,longitude:-73.982});
+test('trains in transit and default-status reports never place a marker at their next station',()=>{
+ assert.equal(vehicleStopStatus.STOPPED_AT,1);
+ assert.equal(vehicleStopStatus.IN_TRANSIT_TO,2);
+ for(const currentStatus of [2,undefined]){
+  const s=store();s.entries.get('gtfs').message.entity[0].vehicle.currentStatus=currentStatus;
+  assert.equal(vehicleSnapshot(s,{now,modes:['subway']}).vehicles.length,0);
+  assert.equal(nearbySubwayBoard(s,{latitude:40.746,longitude:-73.982},{stop:'632N'},now).departures.length,0);
+ }
 });
 test('fresh feed headers cannot make old, future-dated, deleted, canceled, or invalid GPS reports live',()=>{
  for(const mutate of [v=>v.timestamp=seconds-100,v=>v.timestamp=seconds+60,v=>v.position.latitude=0,v=>delete v.position,v=>v.trip.scheduleRelationship=3]){
@@ -131,10 +135,12 @@ test('live stop observations drive the same moving train and countdown across en
   {stopId:'skipN',arrival:{time:seconds+120},scheduleRelationship:1},
   {stopId:'nextN',arrival:{time:seconds+180}}
  ]}};
- const position={vehicle:{trip,timestamp:seconds-30,stopId:'632N',currentStatus:1}};
+ const position={vehicle:{trip,timestamp:seconds-30,stopId:'632N',currentStatus:2}};
  s.entries.set('gtfs',{sourceTimestamp:now,message:{entity:[position,entity]}});
- const board=nearbySubwayBoard(s,stops['632N'],{stop:'632N'},now).departures;
- const [marker]=vehicleSnapshot(s,{now}).vehicles;
+ const queryOptions=vehicleQuery(new URLSearchParams('modes=subway&lines=6&lat=40.746&lon=-73.982&stop=632N'));
+ const combined=await vehicleResponse(s,{...queryOptions,now}),board=combined.board.departures;
+ const [marker]=combined.vehicles;
+ assert.equal(combined.board.generatedAt,combined.generatedAt);
  assert.equal(marker.trackingId,board[0].trackingId);
  assert.equal(marker.accuracy,'interpolated');
  assert.equal(marker.nextStop.stopId,'632N');
@@ -158,6 +164,37 @@ test('live stop observations drive the same moving train and countdown across en
  assert.equal(nearbySubwayBoard(s,stops['632N'],{stop:'632N'},now).departures.length,0);
  entity.tripUpdate.trip.scheduleRelationship=3;
  assert.equal((await vehicleTrip(s,query,now)).status,'changed');
+});
+test('a train follows observed stop transitions and waits short of the platform until the MTA reports a stop',async()=>{
+ const stops={aN:{name:'A',latitude:40.74,longitude:-73.982},bN:{name:'B',latitude:40.745,longitude:-73.982},
+  cN:{name:'C',latitude:40.75,longitude:-73.982}};
+ const s=new FeedStore({tripIndex:{stops},subwayShapeData:{'6..N01R':Object.values(stops).map(({latitude,longitude})=>[latitude,longitude])}});
+ const trip={tripId:'progress_6..N01R',routeId:'6',startDate:'20261120'};
+ const frame=(timestamp,status,target,upcoming)=>{
+  s.entries.set('gtfs',{sourceTimestamp:timestamp,message:{entity:[
+   {vehicle:{trip,timestamp:timestamp/1000,currentStatus:status,stopId:target}},
+   {tripUpdate:{trip,stopTimeUpdate:upcoming.map(stopId=>({stopId,arrival:{time:timestamp/1000-500}}))}}
+  ]}});
+  return vehicleSnapshot(s,{now:timestamp,modes:['subway']}).vehicles[0];
+ };
+ const first=seconds*1000-35000;
+ assert.equal(frame(first,1,'aN',['aN','bN','cN']).accuracy,'reported-stop');
+ const moving=frame(first+15000,2,'bN',['bN','cN']);
+ assert.equal(moving.motion.fromStopId,'aN');
+ const eta=moving.motion.arrivesAt;
+ const near=vehicleSnapshot(s,{now:eta+1000,modes:['subway']}).vehicles[0];
+ assert(near.coordinate.latitude<stops.bN.latitude);
+ assert(!near.nextStop.due);
+ assert.equal(nearbySubwayBoard(s,stops.bN,{stop:'bN'},eta+1000).departures.length,0);
+ const confirmedApproach=frame(Math.ceil(eta/1000)*1000+5000,0,'bN',['bN','cN']);
+ assert(confirmedApproach.nextStop.due);
+ assert(confirmedApproach.coordinate.latitude>=near.coordinate.latitude);
+ assert(confirmedApproach.coordinate.latitude<stops.bN.latitude);
+ const arrived=frame(Math.ceil(eta/1000)*1000+20000,1,'bN',['bN','cN']);
+ assert.equal(arrived.accuracy,'reported-stop');
+ assert.equal(arrived.coordinate.latitude,stops.bN.latitude);
+ assert.equal(arrived.motion,null);
+ assert(!arrived.nextStop.due);
 });
 test('vehicle tracking rejects unsupported feeds and preserves the trip service date',async()=>{
  const parse=id=>vehicleTripQuery(new URLSearchParams({id}));

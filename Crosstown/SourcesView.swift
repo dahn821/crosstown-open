@@ -118,6 +118,7 @@ struct TransitBoard: View {
     @State private var selectedLine = ""
     @State private var availableLines = Set<String>()
     @State private var observedTrains: [String: LiveVehicle] = [:]
+    @State private var refreshMap = 0
     @State private var choosingLine = false
     @State private var lineQuery = ""
 
@@ -156,6 +157,7 @@ struct TransitBoard: View {
         VStack(spacing: 0) {
             JourneyMap(route: nil, origin: model.origin, destination: nil, apiBaseURLString: model.apiBaseURLString,
                        liveMode: mode, busStops: busStops, selectedLine: selectedLine,
+                       boardLocation: mode == .subway ? near : nil, boardStop: focus?.id, refreshRequest: refreshMap,
                        highlightedStations: Set([activeStation?.id].compactMap { $0 }),
                        stationPredictions: mode == .subway ? arrivals.filter { $0.stationId == activeStation?.id } : [],
                        onCenterChange: { next in
@@ -168,6 +170,13 @@ struct TransitBoard: View {
                            if mode == .subway {
                                observedTrains = Dictionary((snapshot?.vehicles ?? []).compactMap { row in row.trackingId.map { ($0, row) } },
                                                            uniquingKeysWith: { $0.reportedDate > $1.reportedDate ? $0 : $1 })
+                               if let arrivals = snapshot?.board {
+                                   board = arrivals; error = nil; loading = false
+                               } else if snapshot != nil {
+                                   Task { await refresh() }
+                               } else {
+                                   board = nil; error = "Current subway reports are unavailable."; loading = false
+                               }
                            }
                        })
                 .frame(minHeight: 230, maxHeight: .infinity)
@@ -186,7 +195,7 @@ struct TransitBoard: View {
                     Text(focus?.name ?? (mode == .bus ? "Bus arrivals" : "Subway arrivals"))
                         .font(.headline).lineLimit(1).accessibilityAddTraits(.isHeader)
                     Spacer(minLength: 5)
-                    Button { Task { await refresh() } } label: { Image(systemName: "arrow.clockwise").frame(width: 38, height: 38) }
+                    Button { Task { await reload() } } label: { Image(systemName: "arrow.clockwise").frame(width: 38, height: 38) }
                         .disabled(loading).accessibilityLabel("Refresh arrivals")
                 }
                 if focus != nil {
@@ -203,16 +212,17 @@ struct TransitBoard: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
-                    if loading && board == nil { ProgressView("Checking live transit…") }
+                    if board == nil && error == nil { ProgressView("Checking live transit…") }
                     if let error {
                         Text(error).font(.subheadline).foregroundStyle(Theme.secondary)
                         Button("Check Sources", action: onSources)
                     }
                     if let board { departureSection(board: board) }
                 }.padding(.horizontal, 17).padding(.vertical, 8)
-            }.frame(height: 150).refreshable { await refresh() }.id(queryID + (selectedStop ?? ""))
+            }.frame(height: 150).refreshable { await reload() }.id(queryID + (selectedStop ?? ""))
         }
         .task(id: queryID) {
+            guard mode == .bus else { return }
             board = nil
             do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
             while !Task.isCancelled {
@@ -319,13 +329,13 @@ struct TransitBoard: View {
             }
             Spacer(minLength: 4)
             VStack(alignment: .trailing, spacing: 5) {
-                Text(countdown(departure, at: now)).font(.headline).foregroundStyle(Theme.green)
+                Text(countdown(departure, at: now) ?? "—").font(.headline).foregroundStyle(Theme.green)
                 Text(transitClock(departure.arrivalTime ?? departure.departureTime)).font(.caption).foregroundStyle(Theme.secondary)
             }
         }.padding(.vertical, 8)
     }
     private func subwayStation(_ station: TransitStation, now: Date, stale: Bool) -> some View {
-        let journeys = arrivals.filter { $0.stationId == station.id && (transitDate($0.departureTime) ?? .distantPast) >= now }
+        let journeys = arrivals.filter { $0.stationId == station.id && countdown($0, at: now) != nil }
         let groups = Dictionary(grouping: journeys) { $0.direction ?? "Upcoming trains" }
         let directions = groups.keys.sorted {
             if $0 == "Uptown" { return $1 != "Uptown" }
@@ -345,7 +355,7 @@ struct TransitBoard: View {
                             ForEach(displayedTrains(groups[direction] ?? [])) { departure in
                                 HStack(spacing: 4) {
                                     SubwayBadge(line: departure.line, reportedColor: departure.routeColor, size: 18)
-                                    Text(countdown(departure, at: now)).font(.caption).monospacedDigit()
+                                    Text(countdown(departure, at: now) ?? "—").font(.caption).monospacedDigit()
                                 }.padding(.horizontal, 5).padding(.vertical, 3)
                                     .background(.white, in: Capsule())
                             }
@@ -394,8 +404,12 @@ struct TransitBoard: View {
         var seen = Set<String>()
         return Array(arrivals.filter { seen.insert($0.line).inserted }.prefix(4))
     }
-    private func countdown(_ departure: TransitDeparture, at time: Date) -> String {
+    private func countdown(_ departure: TransitDeparture, at time: Date) -> String? {
         departure.countdown(vehicle: departure.trackingId.flatMap { observedTrains[$0] }, now: time)
+    }
+    private func reload() async {
+        if mode == .subway { loading = true; refreshMap += 1 }
+        else { await refresh() }
     }
     private func refresh() async {
         guard let url = URL(string: model.apiBaseURLString) else { return }
