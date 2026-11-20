@@ -12,6 +12,15 @@ test('mixed transit cannot starve independent subway, bus, or walking searches',
  assert(!searchFamilies({...defaults(),bikeSource:'ownBike'},true).some(f=>f.transit?.transit.some(t=>t.mode==='BUS')));
  assert(!searchFamilies(defaults(),false).some(f=>f.transit?.transit.some(t=>t.mode==='BUS')));
 });
+test('Fastest compares the full walking and biking duration and favors walking on exact ties',()=>{
+ const walk={id:'walk',minutes:4,fareCents:0,outdoorMinutes:4,undergroundMinutes:0,walkingMinutes:4,bikingMinutes:0,transfers:0,legs:[{mode:'walk'}]};
+ const bike={...walk,id:'bike',minutes:6,outdoorMinutes:6,walkingMinutes:1,bikingMinutes:5,legs:[{mode:'bike',setupMinutes:2}]};
+ const preferences=defaults();
+ assert.equal(bestRoutes([bike,walk],preferences)[0].id,'walk');
+ assert.equal(compareModes([bike,walk],preferences).bike[0].minutes,6);
+ assert.equal(bestRoutes([{...bike,minutes:4,outdoorMinutes:4,bikingMinutes:3},walk],preferences)[0].id,'walk');
+ assert.equal(bestRoutes([{...bike,minutes:3.9,outdoorMinutes:3.9,bikingMinutes:2.9},walk],preferences)[0].id,'bike');
+});
 test('mode comparisons retain a valid train even when a bus dominates the overall ranking',()=>{
  const bus={id:'bus',minutes:10,fareCents:300,outdoorMinutes:0,undergroundMinutes:0,walkingMinutes:0,bikingMinutes:0,transfers:0,legs:[{mode:'bus',line:'M1'}]};
  const train={...bus,id:'train',minutes:20,undergroundMinutes:10,legs:[{mode:'subway',line:'6'}]};

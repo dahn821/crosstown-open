@@ -2,7 +2,8 @@ import {FeedStore,subwayFeeds} from './feeds.mjs';
 import {createPlaceSearch} from './places.mjs';
 import {route,configureRoutingData,validateRequest} from './otp.mjs';
 import {createTransitousSearch} from './transitous.mjs';
-import {vehicleQuery,vehicleSnapshot} from './vehicles.mjs';
+import {vehicleQuery,vehicleResponse} from './vehicles.mjs';
+import {busLineStops} from './bus-trip-shapes.mjs';
 import {vehicleTrip,vehicleTripQuery} from './vehicle-trip.mjs';
 import {ridePrediction,rideQuery} from './ride.mjs';
 import {bikeStationSnapshot} from './citi-bike.mjs';
@@ -66,7 +67,7 @@ export function createCommunityAPI({lookup,restaurants,busKey='',subwayShapeData
   try{
    const url=new URL(request.url),pathname=url.pathname.replace(/^\/\.netlify\/functions\/api(?=\/)/,'/api');
    if(pathname==='/api/ready')return json({ready:true});
-   if(pathname==='/api/places'&&request.method==='GET')return json(await places(url.searchParams.get('q')));
+   if(pathname==='/api/places'&&request.method==='GET')return json(await places(url.searchParams.get('q'),{directoryOnly:url.searchParams.get('directory')==='1'}));
    if((pathname==='/api/ride'||pathname==='/api/vehicle-trip')&&request.method==='GET'){
      const tracking=pathname==='/api/vehicle-trip';
      const query=(tracking?vehicleTripQuery:rideQuery)(url.searchParams);
@@ -81,13 +82,17 @@ export function createCommunityAPI({lookup,restaurants,busKey='',subwayShapeData
      if(activePlans>=2)return json({error:'Several routes are being checked. Please try again shortly.'},429);
      const text=await request.text();if(text.length>20000)return json({error:'Request too large.'},413);
      let input;try{input=JSON.parse(text);}catch{return json({error:'Invalid route request.'},400);}
-     validateRequest(input);
+     const {preferences}=validateRequest(input);
      activePlans++;
      try{
-       const deadline=AbortSignal.timeout(22000);
-       await feeds([...subwayFeeds,'bus','bikes'],6000);
+       const deadline=AbortSignal.any([request.signal,AbortSignal.timeout(22000)]);
+       const feedsReady=feeds([
+         ...(preferences.modes.includes('subway')?subwayFeeds:[]),
+         ...(preferences.modes.includes('bus')?['bus']:[]),
+         ...(preferences.modes.includes('bike')&&preferences.bikeSource==='citiBike'?['bikes']:[])
+       ],6000);
        const adapter=createTransitousSearch(store,{fetcher,cache,contact,leaveNow:!input.departureTime&&!input.arrivalTime,beforeRequest:reserveProviderRequest,onRateLimit:pauseProvider,deadline});
-       const result=await route(input,store,{searcher:adapter.search,bikeCandidateLimit:1,rentalTransitFamilies:false,egressBikeConnections:true,lowAssistPickupLimit:2});
+       const result=await route(input,store,{searcher:adapter.search,feedsReady,bikeCandidateLimit:1,rentalTransitFamilies:false,egressBikeConnections:true,lowAssistPickupLimit:2});
        result.router={engine:'MOTIS 2 / Transitous',mode:'community'};
        result.searchBounds={...result.searchBounds,windowMinutes:15,extraBikeConnections:2,bikeDockPairsPerAccess:1};
        result.notice='Routes use Transitous street and schedule data, checked against current MTA predictions and Citi Bike reports. Times are estimates and availability can change.';
@@ -102,7 +107,7 @@ export function createCommunityAPI({lookup,restaurants,busKey='',subwayShapeData
      if(pathname==='/api/vehicles'){
        const query=vehicleQuery(url.searchParams);
        await feeds([...(query.modes.includes('subway')?subwayFeeds:[]),...(query.modes.includes('bus')?['bus','busVehicles']:[])]);
-       return json(vehicleSnapshot(store,query));
+       return json(await vehicleResponse(store,query));
      }
      const coordinate={latitude:Number(url.searchParams.get('lat')),longitude:Number(url.searchParams.get('lon'))};
      if(!url.searchParams.has('lat')||!url.searchParams.has('lon')||!withinNYC(coordinate))return json({error:'Choose a start in New York City.'},400);
@@ -118,8 +123,9 @@ export function createCommunityAPI({lookup,restaurants,busKey='',subwayShapeData
        return json({...board,feedStatus:store.status(),generatedAt:new Date().toISOString(),radiusMeters:stationRadius});
      }
      if(url.searchParams.get('mode')==='bus'){
-       await feeds(['bus']);
-       const board=nearbyBusBoard(store,lookup.busStops,coordinate,{stop:url.searchParams.get('stop'),line:url.searchParams.get('line')});
+       const line=url.searchParams.get('line'),stop=url.searchParams.get('stop');
+       const [,routeStops]=await Promise.all([feeds(['bus']),line&&busLineStops(store,line)]);
+       const board=nearbyBusBoard(store,routeStops||lookup.busStops,coordinate,{stop,line,routeStops:Boolean(routeStops)});
        return json({...board,feedStatus:store.status(),generatedAt:new Date().toISOString(),radiusMeters:busStopRadius});
      }
      const stops=transitStops.map(stop=>({...stop,distance:meters(coordinate,{latitude:stop.lat,longitude:stop.lon})})).filter(stop=>stop.distance<=1200).sort((a,b)=>a.distance-b.distance);

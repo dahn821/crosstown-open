@@ -15,10 +15,11 @@ const badge=departure=>`<span class="live-line" style="--line-color:#2262aa">${e
 const feet=meters=>meters<30?'At map center':meters<805?`${Math.round(meters*3.28084/25)*25} ft away`:`${(meters/1609.344).toFixed(1)} mi away`;
 const directionOrder=direction=>direction==='Uptown'?0:direction==='Downtown'?1:2;
 
-export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect}){
+export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect,openLineSheet}){
   const panel=document.querySelector('#live-explore'),body=panel.querySelector('.live-board'),count=panel.querySelector('.live-count'),target=document.querySelector('#transit-target');
   const nearby=panel.querySelector('.transit-nearby');
-  const heading=panel.querySelector('.live-title'),status=panel.querySelector('.live-map-report'),select=panel.querySelector('#live-line-filter');
+  const heading=panel.querySelector('.live-title'),status=panel.querySelector('.live-map-report'),select=document.querySelector('#live-line-filter');
+  const scan=document.querySelector('#live-bike-scan');
   const detail=panel.querySelector('.live-detail'),toggle=panel.querySelector('[data-live-toggle]');
   const lines=L.layerGroup().addTo(map),stops=L.layerGroup().addTo(map),dockLayer=L.layerGroup().addTo(map);
   const railPane=map.createPane('subway-rails');
@@ -27,7 +28,7 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect}){
   const railRenderer=L.canvas({pane:'subway-rails',padding:.2});
   const dockRenderer=L.canvas({padding:.2});
   const linesSeen={subway:new Set(),bus:new Set()};
-  let view='directions',data,network,focused,selectedStop,selectedLine='',pending,moveTimer,failure='',lineOptionsKey='',tracking=false,dragging=false,settleTimer;
+  let view='directions',data,network,focused,selectedStop,selectedLine='',pending,moveTimer,failure='',fitLine=false,tracking=false,dragging=false,settleTimer,refreshLineChoices;
   const showingTransit=()=>view==='subway'||view==='bus';
 
   function targetPoint(){
@@ -42,18 +43,40 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect}){
     detail.hidden=!expanded;
     toggle.setAttribute('aria-expanded',String(expanded));
   }
-  function updateLines(){
-    const reported=[...(data?.departures||[]).map(d=>d.line),...(network?.segments||[]).map(s=>s.line)];
-    if(showingTransit()&&!selectedLine)for(const line of reported)if(line)linesSeen[view].add(line);
-    const entries=[...new Set([selectedLine,...reported,...(linesSeen[view]||[])].filter(Boolean))]
-      .sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
-    const key=entries.join('|');
-    if(key!==lineOptionsKey){
-      lineOptionsKey=key;
-      select.innerHTML='<option value="">All lines</option>'+entries.map(line=>`<option value="${esc(line)}">${esc(view==='subway'?subwayStyle(line).name:line)}</option>`).join('');
-    }
-    select.value=selectedLine;
+  const allLines=()=>view==='subway'?'All subway lines':'All bus routes';
+  const lineName=line=>view==='subway'?subwayStyle(line).name:line;
+  function changeLine(line){
+    if(line===selectedLine)return;
+    selectedLine=line;fitLine=Boolean(line);network=null;data=null;focused=null;selectedStop=null;failure='';
+    lines.clearLayers();body.scrollTop=0;nearby.scrollLeft=0;
+    select.querySelector('.live-line-current').textContent=line?lineName(line):allLines();
+    status.textContent=line&&view==='bus'?'Loading route path…':'';
+    vehicles.setStationPredictions([]);vehicles.setLine(line);
+    renderBoard();queueBoard();
   }
+  function showLinePicker(){
+    const bus=view==='bus',title=bus?'Choose a bus route':'Choose a subway line';
+    const dialog=openLineSheet(title,`<input id="line-query" class="search-input" type="search" aria-label="${bus?'Find a bus route':'Find a subway line'}" placeholder="${bus?'Search routes, e.g. M15':'Search lines, e.g. 6'}" autocomplete="off"><div class="line-options"></div>`);
+    const input=dialog.querySelector('#line-query'),list=dialog.querySelector('.line-options');
+    refreshLineChoices=()=>{
+      if(!dialog.open||!input.isConnected)return;
+      const shortlist=new Set((data?.departures||[]).map(row=>row.line));
+      const catalog=[...new Set([...shortlist,...linesSeen[view],selectedLine].filter(Boolean))].sort((a,b)=>Number(shortlist.has(b))-Number(shortlist.has(a))||a.localeCompare(b,undefined,{numeric:true}));
+      const key=normalizeLine(input.value),shown=catalog.filter(line=>!key||normalizeLine(line).includes(key)||normalizeLine(lineName(line)).includes(key));
+      list.innerHTML=`<button data-map-line="" aria-pressed="${!selectedLine}">${allLines()}</button>`+shown.map(line=>{
+        const name=lineName(line),bullet=bus?badge({line}):subwayBullet(line);
+        return `<button data-map-line="${esc(line)}" aria-label="${esc(name)}" aria-pressed="${selectedLine===line}">${bullet}${!bus&&name!==line?`<span>${esc(name)}</span>`:''}</button>`;
+      }).join('')+(key&&!shown.length?'<p class="hint">No matching lines in current service.</p>':'');
+    };
+    input.addEventListener('input',refreshLineChoices);
+    list.addEventListener('click',event=>{
+      const button=event.target.closest('[data-map-line]');
+      if(button){changeLine(button.dataset.mapLine);dialog.querySelector('[data-action="close"]').click();}
+    });
+    refreshLineChoices();
+  }
+  const normalizeLine=value=>value.toLowerCase().replace(/[^a-z0-9]/g,'');
+  select.addEventListener('click',showLinePicker);
   function focusStation(station){
     focused=station;selectedStop=station.id;
     body.scrollTop=0;
@@ -84,9 +107,9 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect}){
   }
   function renderStops(){
     stops.clearLayers();
-    if(map.getZoom()<12)return;
+    if(map.getZoom()<(view==='bus'&&!selectedLine?14:12))return;
     const boardStations=new Set((data?.stations||[]).map(station=>station.id));
-    const stationList=network?.stations||(data?.stations??[...new Map((data?.departures||[]).filter(d=>!selectedLine||d.line===selectedLine).map(d=>[stationID(d),{...d.stop,id:stationID(d)}])).values()]);
+    const stationList=network?.stations?.length?network.stations:(data?.stations??[...new Map((data?.departures||[]).filter(d=>!selectedLine||d.line===selectedLine).map(d=>[stationID(d),{...d.stop,id:stationID(d)}])).values()]);
     for(const station of stationList){
       const pos=point(station.coordinate);
       if(!map.getBounds().contains(pos))continue;
@@ -125,7 +148,7 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect}){
     }
     return [...groups.values()].map(items=>{
       const first=items[0];
-      return `<div class="bus-arrival">${badge(first)}<small>${esc(first.direction||'Live arrival')}</small><span>${items.slice(0,3).map(row=>departureButton(row,'','bus-departure')).join('')}</span></div>`;
+      return `<div class="bus-arrival">${selectedLine?badge(first):`<button class="bus-route-link" data-select-line="${esc(first.line)}" aria-label="Show route ${esc(first.line)}">${badge(first)}</button>`}<small>${esc(first.direction||'Live arrival')}</small><span>${items.slice(0,3).map(row=>departureButton(row,'','bus-departure')).join('')}</span></div>`;
     }).join('');
   }
   function departureButton(row,bullet,className){
@@ -134,8 +157,8 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect}){
     return `<button class="${className}" data-track-trip="${esc(row.trackingId)}" title="Follow ${esc(row.line)}">${bullet}${time}</button>`;
   }
   function renderBoard(){
-    updateLines();
-    const rows=(data?.departures||[]).filter(d=>(!selectedLine||d.line===selectedLine)&&Date.parse(d.departureTime)>=Date.now());
+    const rows=(data?.departures||[]).filter(d=>(!selectedLine||(view==='bus'?normalizeLine(d.line)===normalizeLine(selectedLine):d.line===selectedLine))&&Date.parse(d.departureTime)>=Date.now());
+    for(const row of rows)linesSeen[view].add(row.line);
     const fallback=[...new Map(rows.map(row=>[stationID(row),{...row.stop,id:stationID(row),metersAway:row.metersAway}])).values()];
     const stations=data?.stations??fallback.sort((a,b)=>a.metersAway-b.metersAway).slice(0,4);
     const active=stations.find(station=>station.id===selectedStop)||stations[0];
@@ -152,7 +175,7 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect}){
     vehicles.setStationPredictions(view==='subway'&&!stale?timing:[]);
     const arrivals=view==='subway'?subwayTimes(timing):busTimes(timing);
     const empty=active?'No live arrivals reported at this stop.':data?
-      (selectedLine?'Drag toward this line or choose All lines.':`No ${label}s within ¾ mile. Drag the map to explore.`):`Checking nearby ${label}s…`;
+      (selectedLine?`Tap a ${label} along ${lineName(selectedLine)} to check arrivals.`:`No ${label}s within ¾ mile. Drag the map to explore.`):`Checking nearby ${label}s…`;
     const message=failure||(stale?'Current MTA reports are unavailable.':empty);
     const scroll=body.scrollTop;
     const more=view==='subway'&&active&&!focused&&arrivals?`<button class="live-back" data-live-station="${esc(active.id)}">All departures ${icon('chevron')}</button>`:'';
@@ -189,7 +212,7 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect}){
     moveTimer=setTimeout(refresh,showingTransit()?120:260);
   }
   function reset(){
-    data=null;network=null;focused=null;selectedStop=null;selectedLine='';failure='';
+    data=null;network=null;focused=null;selectedStop=null;selectedLine='';failure='';fitLine=false;
     dragging=false;target.classList.remove('panning','settled');
     nearby.hidden=true;nearby.innerHTML='';
     pending?.abort();pending=null;clearTimeout(moveTimer);
@@ -222,6 +245,7 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect}){
   panel.addEventListener('click',event=>{
     const button=event.target.closest('button');
     if(!button)return;
+    if(button.dataset.selectLine){changeLine(button.dataset.selectLine);return;}
     if(button.dataset.trackTrip){
       const row=data?.departures?.find(item=>item.trackingId===button.dataset.trackTrip&&stationID(item)===selectedStop);
       if(row)onSelect(vehicles.findTrip(row.trackingId)||{...row,coordinate:row.stop.coordinate,
@@ -248,12 +272,6 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect}){
     const station=data?.stations?.find(item=>item.id===id)||data?.departures?.find(item=>stationID(item)===id)?.stop;
     if(station)focusStation({...station,id});
   });
-  select.addEventListener('change',()=>{
-    selectedLine=select.value;network=null;lines.clearLayers();
-    selectedStop=null;body.scrollTop=0;nearby.scrollLeft=0;
-    vehicles.setLine(selectedLine);renderBoard();
-    if(showingTransit())queueBoard();
-  });
   document.addEventListener('visibilitychange',()=>{if(!document.hidden)refresh();});
   setInterval(refresh,30000);
   setInterval(()=>{
@@ -272,20 +290,24 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect}){
       view=next;reset();
       target.hidden=!showingTransit();target.dataset.mode=view;
       panel.hidden=view==='directions';panel.dataset.mode=view;
+      select.hidden=!showingTransit();scan.hidden=view!=='bike';
+      if(showingTransit())select.querySelector('.live-line-current').textContent=allLines();
       vehicles.setView(view);
       if(panel.hidden)return;
       heading.textContent=titles[view];
       count.textContent=view==='bike'?'Checking dock availability…':view==='subway'?'Drag the map to find stations':'Drag the map to find stops';
       status.textContent=view==='bike'?'Citi Bike GBFS':view==='bus'?'MTA Bus Time GPS':'Estimated from live train reports';
       body.innerHTML='<p class="live-empty">Loading live reports…</p>';
-      panel.querySelector('.live-filter').hidden=view==='bike';
       panel.querySelector('.live-legend').hidden=view!=='bike';
-      updateLines();showExpanded(true);
+      showExpanded(true);
       refresh();
     },
     vehicleReport(mode,result){
       if(mode!==view||view==='directions'||view==='bike')return;
       network=result?.network;
+      const known=linesSeen[view].size;
+      for(const line of result?.availableLines||[])linesSeen[view].add(line);
+      if(linesSeen[view].size!==known)refreshLineChoices?.();
       lines.clearLayers();
       const corridors=new Map();
       for(const segment of network?.segments||[]){
@@ -296,10 +318,17 @@ export function attachLiveExplore({map,L,api,vehicles,getLocation,onSelect}){
       const weight=selectedLine?5.5:4;
       for(const {points} of corridors.values())L.polyline(points,{renderer:railRenderer,color:'#fff',weight:weight+2.5,interactive:false}).addTo(lines);
       for(const {points,color} of corridors.values())L.polyline(points,{renderer:railRenderer,color,weight,opacity:.92,interactive:false}).addTo(lines);
+      if(fitLine&&corridors.size){
+        fitLine=false;
+        const narrow=matchMedia('(max-width:700px)').matches,bottom=map.getSize().y*.34;
+        const bounds=L.latLngBounds([...corridors.values()].flatMap(segment=>segment.points));
+        map.fitBounds(bounds,{maxZoom:15,animate:false,
+          paddingTopLeft:narrow?[18,114]:[400,84],paddingBottomRight:narrow?[18,bottom+98]:[28,48]});
+      }
       const qty=result?.vehicles?.length??0,bus=view==='bus';
       status.textContent=result?(bus&&result.feedStatus.busVehicles?.stale?'Bus GPS unavailable':bus?
-        `${qty} GPS positions${result.truncated?' · zoom in':''}`:'Estimated from live train reports'):'Vehicle reports unavailable';
-      renderStops();updateLines();
+        `${qty} GPS positions${result.truncated?' · zoom in':''}${selectedLine&&!corridors.size?' · Route path unavailable':''}`:'Estimated from live train reports'):'Vehicle reports unavailable';
+      renderStops();
     }
   };
 }

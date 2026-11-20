@@ -9,6 +9,22 @@
 }
 .map-tabs button[aria-pressed="true"] { color:#1948c8; background:#e9f0ff; }
 .map-tabs .icon { width:17px; height:17px; }
+.live-map-actions { position:absolute; z-index:640; top:83px; right:24px; }
+.live-map-button {
+  display:inline-flex; align-items:center; justify-content:center; gap:8px; min-height:44px; max-width:180px;
+  border:1px solid #dfe8ef; border-radius:12px; padding:7px 12px; background:#fff; box-shadow:var(--shadow);
+  color:#213b53; font-size:13px; font-weight:650; text-decoration:none; text-align:left;
+}
+.live-map-button .icon { width:17px; height:17px; }
+.live-line-current { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+#app[data-vehicle-tracking] .live-map-actions { display:none; }
+.line-options { display:grid; grid-template-columns:repeat(auto-fit,minmax(124px,1fr)); gap:7px; padding-top:12px; }
+.line-options button {
+  display:flex; align-items:center; gap:6px; min-height:44px; padding:7px 10px;
+  text-align:left; border:1px solid #dfe8ef; border-radius:10px; background:#f5f8fc;
+}
+.line-options button[aria-pressed="true"] { background:#e8efff; border-color:#b5c5ef; color:#1948c8; }
+.bus-route-link { min-height:40px; text-align:left; }
 #app[data-journey-view] .map-tabs,
 #app:not([data-main-view="directions"]) :is(.planner,.map-actions,.route-map-caption) { display:none; }
 #live-explore {
@@ -27,7 +43,6 @@
 .live-detail { display:flex; flex-direction:column; min-height:0; }
 .live-toolbar { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:4px 13px 9px 17px; flex-shrink:0; }
 .live-map-report { font-size:11px; color:#466473; line-height:1.45; }
-.live-filter select { min-height:34px; background:#f0f4f8; color:#1a394c; border:0; border-radius:9px; padding:0 8px; font-size:12px; }
 .visually-hidden { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(100%); white-space:nowrap; }
 .live-board { overflow:auto; overscroll-behavior:contain; min-height:0; border-top:1px solid #e6edf0; padding:0 11px 7px; }
 .live-item, .live-back { min-height:47px; width:100%; text-align:left; }
@@ -187,6 +202,7 @@ button:is(.subway-arrival,.bus-departure):hover { background:#dbe8fc; }
   #app[data-main-view="directions"]:not([data-journey-view]) :is(.vehicle-map-control,.utilities) { top:calc(196px + env(safe-area-inset-top)); }
   .vehicle-explore #app[data-main-view="directions"] :is(.vehicle-map-control,.utilities) { top:calc(63px + env(safe-area-inset-top)); }
   #app:not([data-main-view="directions"]) .utilities { top:calc(63px + env(safe-area-inset-top)); }
+  .live-map-actions { top:calc(63px + env(safe-area-inset-top)); left:10px; right:auto; }
   #app:not([data-main-view="directions"]) .leaflet-bottom { bottom:max(75px,env(safe-area-inset-bottom))!important; }
   #app:not([data-main-view="directions"]) .leaflet-control-zoom { margin-bottom:min(40dvh,340px); }
   #live-explore {
@@ -200,7 +216,6 @@ button:is(.subway-arrival,.bus-departure):hover { background:#dbe8fc; }
   #live-explore:is([data-mode="subway"],[data-mode="bus"]) { max-height:34dvh; }
   #live-explore:is([data-mode="subway"],[data-mode="bus"]) .live-header { padding-block:5px; }
   #live-explore:is([data-mode="subway"],[data-mode="bus"]) .live-toolbar { padding-block:1px 7px; }
-  .live-filter select { font-size:16px; max-width:106px; }
   .live-title { font-size:16px; }
 }
 @media (max-width:340px) {

@@ -165,14 +165,17 @@ export function rank(routes,p){
   const frontier=unique.filter(c=>!unique.some(o=>{const a=metrics(o),b=metrics(c);return a.every((x,i)=>x<=b[i])&&a.some((x,i)=>x<b[i]);}));
   const customHasWeight=[p.timeWeight,p.costWeight,p.outsideWeight,p.undergroundWeight].some(v=>v>0);
   const score=r=>p.priority==='cost'?[r.fareCents,r.minutes]:p.priority==='aboveGround'?[r.undergroundMinutes,r.minutes]:p.priority==='sheltered'?[r.outdoorMinutes,r.minutes]:p.priority==='custom'?[customHasWeight?p.timeWeight*r.minutes/60+p.costWeight*r.fareCents/1000+p.outsideWeight*r.outdoorMinutes/30+p.undergroundWeight*r.undergroundMinutes/30:r.minutes,r.minutes]:[r.minutes,r.fareCents];
-  frontier.sort((a,b)=>{const x=score(a),y=score(b);return x[0]-y[0]||x[1]-y[1]||Date.parse(b.departureTime||0)-Date.parse(a.departureTime||0);});
+  frontier.sort((a,b)=>{const x=score(a),y=score(b);return x[0]-y[0]||x[1]-y[1]||a.bikingMinutes-b.bikingMinutes||Date.parse(b.departureTime||0)-Date.parse(a.departureTime||0);});
   const signatures=new Set(),result=[];
-  const conventional=Math.min(...unique.filter(r=>!r.legs.some(l=>l.mode==='bike')).map(r=>r.minutes));
+  const conventional=unique.reduce((best,r)=>!r.legs.some(l=>l.mode==='bike')&&(!best||r.minutes<best.minutes)?r:best,null);
   for(const r of frontier){
     const tokens=r.legs.filter(l=>l.mode!=='walk').map(l=>`${l.mode}:${l.line||l.bikeRideType||''}`),sig=tokens.filter((v,i)=>!i||v!==tokens[i-1]).join(',');
     if(signatures.has(sig))continue;signatures.add(sig);
-    if(r.bikingMinutes&&Number.isFinite(conventional)&&conventional-r.minutes>=1)r.conventionalMinutesSaved=Math.floor(conventional-r.minutes);
-    r.explanation=Number.isFinite(r.lowAssistMinutesSaved)?lowAssistExplanation(r.lowAssistMinutesSaved):p.priority==='fastest'?(r.conventionalMinutesSaved?`The bike connection saves about ${r.conventionalMinutesSaved} min compared with the quickest transit-only option found.`:'Earliest arrival among the connections found within your limits.'):p.priority==='cost'?(r.fareCents===0?'Classic-bike ride included with your annual membership.':'Lowest estimated fare, with arrival time used to break ties.'):p.priority==='aboveGround'?(r.undergroundMinutes<1?'Above ground throughout this route.':`About ${Math.ceil(r.undergroundMinutes)} min underground, estimated from MTA station structures.`):p.priority==='sheltered'?`About ${Math.ceil(r.outdoorMinutes)} min outside, including walks, cycling and outdoor waits.`:'Balanced using your custom priorities and hard limits.';
+    const saved=r.bikingMinutes&&conventional?Math.floor(conventional.minutes-r.minutes):0;
+    if(saved>0)r.conventionalMinutesSaved=saved;
+    const walk=r.legs.every(leg=>leg.mode==='walk');
+    const savings=conventional?.legs.every(leg=>leg.mode==='walk')?'walking':'the quickest transit option found';
+    r.explanation=Number.isFinite(r.lowAssistMinutesSaved)?lowAssistExplanation(r.lowAssistMinutesSaved):p.priority==='fastest'?(saved>0?`This bike route saves about ${saved} min compared with ${savings}.`:'Earliest arrival among the connections found within your limits.'):p.priority==='cost'?(walk?'Walking is free.':r.bikingMinutes&&r.fareCents===0?'Classic-bike ride included with your annual membership.':'Lowest estimated fare, with arrival time used to break ties.'):p.priority==='aboveGround'?(r.undergroundMinutes<1?'Above ground throughout this route.':`About ${Math.ceil(r.undergroundMinutes)} min underground, estimated from MTA station structures.`):p.priority==='sheltered'?`About ${Math.ceil(r.outdoorMinutes)} min outside, including walks, cycling and outdoor waits.`:'Balanced using your custom priorities and hard limits.';
     result.push(r);if(result.length===6)break;
   }
   return result;
@@ -293,26 +296,35 @@ function fasterSubwayTransfers(pairs,request,store){
   return options;
 }
 
-export async function route(input,store,{searcher=search,bikeCandidateLimit=8,rentalTransitFamilies=true,egressBikeConnections=false,lowAssistPickupLimit=4}={}){
+export async function route(input,store,{searcher=search,feedsReady=Promise.resolve(),bikeCandidateLimit=8,rentalTransitFamilies=true,egressBikeConnections=false,lowAssistPickupLimit=4}={}){
   const request=validateRequest(input),p=request.preferences,families=searchFamilies(p,Boolean(store.busKey)).filter(m=>rentalTransitFamilies||!JSON.stringify(m.transit||{}).includes('BICYCLE_RENTAL'));
-  const results=await Promise.allSettled(families.map(m=>searcher(toInput(request.origin),toInput(request.destination),m,p,request.arriveBy??request.depart,request.arriveBy!=null)));
+  const familiesDone=Promise.allSettled(families.map(async modes=>{
+    if(modes.direct.includes('BICYCLE_RENTAL'))await feedsReady;
+    return searcher(toInput(request.origin),toInput(request.destination),modes,p,request.arriveBy??request.depart,request.arriveBy!=null);
+  }));
+  const bikeConnectionsDone=Promise.allSettled([false,...(egressBikeConnections?[true]:[])].map(async egress=>{
+    await feedsReady;
+    return bikeConnections(request,store,searcher,bikeCandidateLimit,egress);
+  }));
+  const [results]=await Promise.all([familiesDone,feedsReady]);
   let raw=results.filter(r=>r.status==='fulfilled').flatMap(r=>r.value);
   const errors=results.filter(r=>r.status==='rejected').map(r=>r.reason.message);
   if(!raw.length&&errors.length===results.length)throw results[0].reason;
   const lowAssist=lowAssistTrip(raw,request,store,{search:searcher,distance,pickupLimit:lowAssistPickupLimit,
     geometry:leg=>leg.coordinates||(leg.legGeometry?.points?decodePolyline(leg.legGeometry.points):[coordinate(leg.from),coordinate(leg.to)])})
     .catch(error=>{errors.push(error.message);return null;});
-  const bikeSearches=[bikeConnections(request,store,searcher,bikeCandidateLimit)];
-  if(egressBikeConnections)bikeSearches.push(bikeConnections(request,store,searcher,bikeCandidateLimit,true));
-  raw.push(...(await Promise.all(bikeSearches)).flat());
-  const choice=await lowAssist;
+  const [extraBikes,choice]=await Promise.all([bikeConnectionsDone,lowAssist]);
+  for(const result of extraBikes){
+    if(result.status==='fulfilled')raw.push(...result.value);
+    else errors.push(result.reason.message);
+  }
   if(choice)raw.push(choice);
   const snapshot=predictionSnapshot(store),pairs=raw.map(raw=>({raw,route:normalize(raw,request,snapshot)})).filter(pair=>pair.route);
   const faster=fasterSubwayTransfers(pairs,request,snapshot);
   pairs.push(...faster);
   const options=subwayOptions(pairs,request,snapshot,{normalize,rank,primaryTransitMode,
     geometry:connection=>subwayJourneyPoints(snapshot,connection,{requireShape:true})});
-  const routes=bestRoutes(options.primaries,p),routeGroups=compareModes(options.primaries,p,options.transitCandidates),used=new Set([...routes,...Object.values(routeGroups).flat()].flatMap(route=>route.alternativeIds||[])),alternativeRoutes=Object.fromEntries(Object.entries(options.alternativeRoutes).filter(([id])=>used.has(id)));
+  const routeGroups=compareModes(options.primaries,p,options.transitCandidates),routes=bestRoutes(options.primaries,p),used=new Set([...routes,...Object.values(routeGroups).flat()].flatMap(route=>route.alternativeIds||[])),alternativeRoutes=Object.fromEntries(Object.entries(options.alternativeRoutes).filter(([id])=>used.has(id)));
   if(request.arriveBy!=null&&p.priority==='fastest')for(const r of [...routes,...Object.values(routeGroups).flat()])if(!Number.isFinite(r.lowAssistMinutesSaved))r.explanation='Shortest travel time among the connections found that meet your arrival deadline and limits.';
   return {routes,routeGroups,alternativeRoutes,searchBounds:{resultsPerFamily:10,windowMinutes:90,extraBikeConnections:8,lowAssistPickupLimit},notice:'MTA stop predictions and current Citi Bike station reports. Street travel and outdoor exposure are estimates. Availability can change before arrival.',consideredRoutes:raw.length+faster.length,validRoutes:pairs.length,optimality:'best-found-within-bounded-search',timing:{mode:request.arriveBy!=null?'arriveBy':request.departureTime?'departAt':'now',time:new Date(request.arriveBy??request.depart).toISOString()},isSample:false,generatedAt:new Date().toISOString(),feedStatus:store.status(),searchedFamilies:families.length+1,excludedScheduled:p.requireLiveTransit,partialSearch:errors.length>0,warnings:[...(!store.busKey?['Live bus predictions need a Bus Time API key. Bus schedules are only included if you turn off live-only transit.']:[]),...errors.map(()=> 'One route family could not be checked.')].filter((v,i,a)=>a.indexOf(v)===i)};
 }

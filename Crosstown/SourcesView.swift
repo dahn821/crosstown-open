@@ -118,6 +118,8 @@ struct TransitBoard: View {
     @State private var selectedLine = ""
     @State private var availableLines = Set<String>()
     @State private var observedTrains: [String: LiveVehicle] = [:]
+    @State private var choosingLine = false
+    @State private var lineQuery = ""
 
     private var near: Coordinate { focus?.coordinate ?? center ?? model.origin?.coordinate ?? Coordinate(40.7505, -73.9934) }
     private var arrivals: [TransitDeparture] {
@@ -132,10 +134,20 @@ struct TransitBoard: View {
         return arrivals.map(\.stop).filter { seen.insert($0.id).inserted }
     }
     private var lines: [String] {
-        let choices = Set((board?.departures.map(\.line) ?? []) + [selectedLine])
-        return choices.union(availableLines).filter { !$0.isEmpty }
-            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        let nearby = Set(board?.departures.map(\.line) ?? [])
+        let choices = nearby.union(availableLines).union([selectedLine])
+        let query = lineQuery.filter { $0.isLetter || $0.isNumber }.lowercased()
+        return choices.filter { line in
+            guard !line.isEmpty else { return false }
+            return query.isEmpty || line.filter { $0.isLetter || $0.isNumber }.lowercased().contains(query)
+                || lineName(line).filter { $0.isLetter || $0.isNumber }.lowercased().contains(query)
+        }.sorted { first, second in
+            if nearby.contains(first) != nearby.contains(second) { return nearby.contains(first) }
+            return first.localizedStandardCompare(second) == .orderedAscending
+        }
     }
+    private var allLinesTitle: String { mode == .bus ? "All bus routes" : "All subway lines" }
+    private func lineName(_ line: String) -> String { mode == .subway ? SubwayBadge.name(line) : line }
     private var requestedLine: String? { selectedLine.isEmpty ? nil : selectedLine }
     private var activeStation: TransitStation? { board?.stations?.first(where: { $0.id == selectedStop }) ?? board?.stations?.first }
     private var queryID: String { "\(model.apiBaseURLString)|\(near.latitude),\(near.longitude)|\(focus?.id ?? "")|\(requestedLine ?? "")" }
@@ -151,22 +163,29 @@ struct TransitBoard: View {
                            center = next
                        },
                        onStop: { id, name, coordinate in focus = Place(id: id, name: name, neighborhood: "New York City", coordinate: coordinate) },
-                       onVehicleReports: { rows in
+                       onVehicleSnapshot: { snapshot in
+                           availableLines.formUnion(snapshot?.availableLines ?? [])
                            if mode == .subway {
-                               observedTrains = Dictionary(rows.compactMap { row in row.trackingId.map { ($0, row) } },
+                               observedTrains = Dictionary((snapshot?.vehicles ?? []).compactMap { row in row.trackingId.map { ($0, row) } },
                                                            uniquingKeysWith: { $0.reportedDate > $1.reportedDate ? $0 : $1 })
                            }
                        })
                 .frame(minHeight: 230, maxHeight: .infinity)
+                .overlay(alignment: .topLeading) {
+                    Button { lineQuery = ""; choosingLine = true } label: {
+                        HStack(spacing: 7) {
+                            Text(selectedLine.isEmpty ? allLinesTitle : lineName(selectedLine)).lineLimit(1)
+                            Image(systemName: "chevron.down").font(.caption2)
+                        }.font(.subheadline.weight(.semibold)).padding(.horizontal, 10).frame(minHeight: 44)
+                            .background(.regularMaterial, in: .rect(cornerRadius: 10))
+                    }.buttonStyle(.plain).padding(9)
+                    .accessibilityHint(mode == .bus ? "Choose a bus route" : "Choose a subway line")
+                }
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 8) {
                     Text(focus?.name ?? (mode == .bus ? "Bus arrivals" : "Subway arrivals"))
                         .font(.headline).lineLimit(1).accessibilityAddTraits(.isHeader)
                     Spacer(minLength: 5)
-                    Picker("Line", selection: $selectedLine) {
-                        Text("All lines").tag("")
-                        ForEach(lines, id: \.self) { Text(mode == .subway ? SubwayBadge.name($0) : $0).tag($0) }
-                    }.pickerStyle(.menu).labelsHidden().accessibilityLabel("Filter by line")
                     Button { Task { await refresh() } } label: { Image(systemName: "arrow.clockwise").frame(width: 38, height: 38) }
                         .disabled(loading).accessibilityLabel("Refresh arrivals")
                 }
@@ -201,6 +220,36 @@ struct TransitBoard: View {
                 do { try await Task.sleep(for: .seconds(30)) } catch { return }
             }
         }
+        .sheet(isPresented: $choosingLine) {
+            NavigationStack {
+                List {
+                    lineChoice("")
+                    ForEach(lines, id: \.self) { lineChoice($0) }
+                    if lines.isEmpty, !lineQuery.isEmpty { Text("No matching lines in current service.").font(.footnote) }
+                }.searchable(text: $lineQuery, prompt: mode == .bus ? "Find a bus route" : "Find a subway line")
+                    .navigationTitle(mode == .bus ? "Choose a bus route" : "Choose a subway line")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { choosingLine = false } } }
+            }.presentationDragIndicator(.visible)
+        }
+    }
+    private func lineChoice(_ line: String) -> some View {
+        Button { chooseLine(line); choosingLine = false } label: {
+            HStack(spacing: 8) {
+                if mode == .subway, !line.isEmpty { SubwayBadge(line: line, reportedColor: nil) }
+                if line.isEmpty || mode == .bus || lineName(line) != line || line.count > 1 {
+                    Text(line.isEmpty ? allLinesTitle : lineName(line))
+                }
+                Spacer()
+                if selectedLine == line { Image(systemName: "checkmark") }
+            }.frame(minHeight: 34)
+        }.accessibilityLabel(line.isEmpty ? allLinesTitle : lineName(line))
+            .accessibilityAddTraits(selectedLine == line ? [.isSelected] : [])
+    }
+    private func chooseLine(_ line: String) {
+        guard selectedLine != line else { return }
+        board = nil; focus = nil; selectedStop = nil; observedTrains = [:]; error = nil
+        selectedLine = line
     }
     private func departureSection(board: TransitDepartures) -> some View {
         return VStack(alignment: .leading, spacing: 12) {
@@ -324,9 +373,11 @@ struct TransitBoard: View {
             ForEach(keys, id: \.self) { key in
                 if let trips = groups[key], let first = trips.first {
                     HStack(spacing: 8) {
-                        Text(first.line).font(.caption.bold()).foregroundStyle(.white)
-                            .padding(.horizontal, 7).padding(.vertical, 5)
-                            .background(Theme.mode(.bus), in: .rect(cornerRadius: 7))
+                        Button { chooseLine(first.line) } label: {
+                            Text(first.line).font(.caption.bold()).foregroundStyle(.white)
+                                .padding(.horizontal, 7).padding(.vertical, 5)
+                                .background(Theme.mode(.bus), in: .rect(cornerRadius: 7))
+                        }.buttonStyle(.plain).accessibilityLabel("Show route \(first.line)").disabled(requestedLine != nil)
                         Text(first.direction ?? "Live arrival").font(.caption).foregroundStyle(Theme.secondary)
                         Spacer(minLength: 4)
                         ForEach(trips.prefix(3)) { departure in
@@ -374,15 +425,26 @@ private func transitClock(_ value: String) -> String {
 
 struct PlacePicker: View {
     let places: [Place]
+    let favorites: [FavoritePlace]
     let title: String
-    let search: (String) async throws -> [Place]
+    let search: (String, Bool) async throws -> PlaceSuggestions
     let onUseCurrentLocation: (() -> Void)?
-    let onSelect: (Place) -> Void
+    let onSave: (Place, String) -> Void
+    let onSelect: ((Place) -> Void)?
     @State private var query = ""
     @State private var results: [Place] = []
     @State private var loading = false
     @State private var error: String?
+    @State private var favoriteTarget: Place?
+    @State private var namingFavorite = false
+    @State private var favoriteLabel = ""
     @Environment(\.dismiss) private var dismiss
+
+    private var foundFavorites: [FavoritePlace] {
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return favorites.filter { text.isEmpty || $0.label.localizedCaseInsensitiveContains(text) || $0.place.name.localizedCaseInsensitiveContains(text) }
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -391,35 +453,85 @@ struct PlacePicker: View {
                         Label("Use current location", systemImage: "location.fill")
                     }
                 }
-                if loading { ProgressView("Searching NYC…") }
-                if let error { Text(error).font(.footnote).foregroundStyle(Theme.secondary) }
-                Section(query.isEmpty ? "Recent places" : "Places") {
-                    ForEach(results) { place in
-                        Button { onSelect(place); dismiss() } label: {
-                            HStack(spacing: 15) {
-                                Image(systemName: "mappin").foregroundStyle(Theme.blue).frame(width: 23)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(place.name).foregroundStyle(Theme.ink)
-                                    Text(place.neighborhood).font(.caption).foregroundStyle(Theme.secondary)
-                                }
-                            }.padding(.vertical, 7)
+                if onSelect != nil, !foundFavorites.isEmpty {
+                    Section("Saved places") {
+                        ForEach(foundFavorites) { favorite in
+                            Button { select(favorite.place) } label: { placeRow(favorite.label, favorite.place.name, symbol: "bookmark.fill") }
                         }
                     }
                 }
+                Section(query.isEmpty ? "Recent places" : "Places") {
+                    ForEach(results) { place in
+                        HStack {
+                            Button { select(place) } label: { placeRow(place.name, place.neighborhood, symbol: "mappin") }.buttonStyle(.plain)
+                            if onSelect != nil {
+                                Button { name(place) } label: { Image(systemName: "bookmark").frame(width: 44, height: 44) }
+                                    .buttonStyle(.borderless).accessibilityLabel("Save \(place.name)")
+                            }
+                        }
+                    }
+                    if loading { ProgressView("Searching NYC…") }
+                    if let error { Text(error).font(.footnote).foregroundStyle(Theme.secondary) }
+                }
             }.searchable(text: $query, prompt: "Search places, restaurants or addresses").navigationTitle(title)
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
-                .task(id: query) {
-                    if query.isEmpty { results = places.filter { $0.id != PlanRequest.currentLocationID }; loading = false; return }
-                    loading = true; results = []; error = nil
-                    do {
-                        try await Task.sleep(for: .milliseconds(500))
-                        let found = try await search(query)
-                        guard !Task.isCancelled else { return }
-                        results = found; error = nil
-                    } catch is CancellationError { return }
-                    catch { self.error = error.localizedDescription }
-                    loading = false
+                .task(id: query) { await updateResults() }
+                .alert("Save place", isPresented: $namingFavorite, presenting: favoriteTarget) { place in
+                    TextField("Home, Work, or another name", text: $favoriteLabel)
+                    Button("Save place") {
+                        let label = String(favoriteLabel.trimmingCharacters(in: .whitespacesAndNewlines).prefix(40))
+                        guard !label.isEmpty else { return }
+                        onSave(place, label)
+                        if onSelect == nil { dismiss() }
+                    }.disabled(favoriteLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("Cancel", role: .cancel) { }
+                } message: { place in
+                    Text(place.name)
                 }
         }.presentationDragIndicator(.visible)
+    }
+    private func select(_ place: Place) {
+        if let onSelect { onSelect(place); dismiss() }
+        else { name(place) }
+    }
+    private func name(_ place: Place) {
+        favoriteTarget = place
+        favoriteLabel = favorites.first { $0.id == place.id }?.label ?? ""
+        namingFavorite = true
+    }
+    private func placeRow(_ title: String, _ subtitle: String, symbol: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol).foregroundStyle(Theme.blue).frame(width: 23)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).foregroundStyle(Theme.ink)
+                Text(subtitle).font(.caption).foregroundStyle(Theme.secondary)
+            }
+            Spacer()
+        }.padding(.vertical, 7).contentShape(Rectangle())
+    }
+    private func updateResults() async {
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        error = nil; loading = false
+        if text.isEmpty { results = places.filter { $0.id != PlanRequest.currentLocationID }; return }
+        results = []
+        guard text.count >= 2 else { return }
+        loading = true
+        do {
+            try await Task.sleep(for: .milliseconds(150))
+            if text.first?.isNumber != true {
+                let nearby = try await search(text, true)
+                try Task.checkCancellation()
+                results = nearby.places
+                if nearby.complete != false { loading = false; return }
+            }
+            let found = try await search(text, false)
+            try Task.checkCancellation()
+            results = found.places
+            if results.isEmpty { error = "No matches in NYC. Try a street address or landmark." }
+        } catch {
+            if Task.isCancelled { return }
+            self.error = error.localizedDescription
+        }
+        loading = false
     }
 }

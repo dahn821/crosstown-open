@@ -12,9 +12,9 @@ import {departureOptions,resolveDeparture,canChooseDeparture} from './transit-ch
 import {createLiveNavigation} from './live-navigation.mjs';
 const $=(s,root=document)=>root.querySelector(s),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const mins=n=>Math.ceil(n),money=c=>c===0?'Included':new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(c/100),clock=s=>s?new Date(s).toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'numeric',minute:'2-digit'}):'—';
-const state={origin:null,destination:null,location:{status:'idle'},preferences:defaults(),response:null,selected:0,loading:false,error:null,health:null,places:[],saved:[],modal:null,journey:null,timing:{mode:'now',time:null},travelMode:'all',mainView:'directions'};
+const state={origin:null,destination:null,location:{status:'idle'},preferences:defaults(),response:null,selected:0,loading:false,error:null,health:null,places:[],landmarks:[],saved:[],favoritePlaces:[],modal:null,journey:null,timing:{mode:'now',time:null},travelMode:'all',mainView:'directions'};
 const sheet=$('#sheet'),app=$('#app'),preview=$('#journey-preview'),navigationPanel=$('#navigation-controls');
-let searchId=0,searchTimer,placeSearchId=0,toastTimer,map,layers,abort,vehicleMap,vehicleTracking,liveExplore,mobileLayout,navigationMarkers;
+let searchId=0,searchTimer,placeAbort,toastTimer,map,layers,abort,vehicleMap,vehicleTracking,liveExplore,mobileLayout,navigationMarkers;
 const departureSelections={};let departureRequestKey="";
 const bikePaceStorage='crosstown.bikePaces.v1';
 try{Object.assign(state.preferences,bikePaces(JSON.parse(localStorage.getItem(bikePaceStorage))));}catch{}
@@ -27,6 +27,11 @@ function trainChoices(route,index){
  return `<details class="train-choices"><summary>Choose a train</summary>${options.length?options.map(option=>`<button class="departure-choice" data-departure-choice="${esc(option.choiceId)}" aria-pressed="${option.choiceId===route.choiceId}"><span><strong>${esc(option.legs[index].line)} · ${clock(option.legs[index].departureTime)}</strong><small>Arrive ${clock(option.arrivalTime)} · ${mins(option.minutes)} min total</small></span><span>${option.choiceId===route.choiceId?'✓':'Choose'}</span></button>`).join(''):'<p class="hint">Refresh this trip for current departures.</p>'}</details>`;
 }
 try{const s=JSON.parse(localStorage.getItem('crosstown.saved.v2')||'[]');state.saved=Array.isArray(s)?s.filter(x=>x.origin?.coordinate&&x.destination?.coordinate&&x.preferences).slice(0,30):[];}catch{}
+const favoritePlaceStorage='crosstown.favoritePlaces.v1';
+try{
+ const saved=JSON.parse(localStorage.getItem(favoritePlaceStorage)||'[]');
+ if(Array.isArray(saved))state.favoritePlaces=saved.filter(item=>typeof item?.label==='string'&&item.place?.id&&item.place.name&&Number.isFinite(item.place.coordinate?.latitude)&&Number.isFinite(item.place.coordinate?.longitude)).slice(0,30);
+}catch{}
 async function api(url,options={}){const r=await fetch('/api'+url,{...options,headers:{'Content-Type':'application/json',...(options.headers||{})}});const d=await r.json();if(!r.ok)throw Error(d.error||'The request could not be completed.');return d;}
 function toast(s){clearTimeout(toastTimer);$('#toast').textContent=s;$('#toast').classList.add('visible');toastTimer=setTimeout(()=>$('#toast').classList.remove('visible'),3000);}
 function hydrate(root=document){for(const n of root.querySelectorAll('[data-icon]'))n.innerHTML=icon(n.dataset.icon);}
@@ -37,7 +42,7 @@ const currentLocation=createCurrentLocationLookup({source:deviceLocation,onUpdat
  if(update.place){const first=!state.origin;state.origin=update.place;renderRoutes();drawRoute(first);planTrip(options);}
  else {if(update.status==='error'){state.origin=null;clearTrip();drawRoute(false);}renderRoutes();}
 }});
-function useCurrentLocation(){closeJourney({focus:false});currentLocation.cancel();state.origin=null;clearTrip();if(state.modal?.type==='place'){sheet.close();state.modal=null;}currentLocation.request();}
+function useCurrentLocation(){closeJourney({focus:false});currentLocation.cancel();state.origin=null;state.travelMode='all';clearTrip();if(state.modal?.type==='place'){cancelPlaceSearch();sheet.close();state.modal=null;}currentLocation.request();}
 function refreshTrip(options={}){if(state.origin?.id===CURRENT_LOCATION_ID||!state.origin)return currentLocation.request(options);return planTrip(options);}
 function currentRoutes(){
  const mode=state.travelMode,all=state.response?.routes||[];
@@ -65,7 +70,10 @@ function renderRoutes(){
  const mode=state.travelMode,sheltered=mode==='all'&&state.preferences.priority==='sheltered';
  const description={subway:'Trips where the subway accounts for most of the ride time.',bus:'Trips where buses account for most of the ride time.',walk:'Walking routes within your walking limit.',bike:'Routes that include a bike ride.'};
  const context=$('#mode-context');
- context.textContent=state.response?.partialSearch?'Some route searches could not finish. Refresh to compare all options.':sheltered?'Subway and bus trips ranked by estimated time outside.':description[mode]||'';
+ const fastest=group=>Math.min(...(state.response?.routeGroups?.[group]||[]).map(route=>route.minutes));
+ const walk=fastest('walk'),bike=fastest('bike');
+ const comparison=mode==='all'&&!sheltered&&Number.isFinite(walk)&&Number.isFinite(bike)?`Walk ${mins(walk)} min · With bike ${mins(bike)} min` : '';
+ context.textContent=state.response?.partialSearch?'Some route searches could not finish. Refresh to compare all options.':sheltered?'Subway and bus trips ranked by estimated time outside.':description[mode]||comparison;
  context.hidden=!context.textContent;
  if(!state.origin||!state.destination){const locating=state.location.status==='loading';$('#results-subtitle').textContent=locating?'Finding your current location':!state.origin?'Choose a start to find routes':'Choose a destination';list.innerHTML=`<div class="empty">${icon('locate')}<h3>${locating?'Finding your location…':!state.origin?'Start where you are.':'Where to?'}</h3><p>${esc(state.location.message||(locating?'Allow location access to find routes from where you are.':'Use your current location or choose a starting address.'))}</p>${!locating?'<button class="primary" data-action="current-location">Use current location</button>':''}<button class="text-button" data-place="${state.origin?'destination':'origin'}">Choose ${state.origin?'a destination':'a start'}</button></div>`;return;}
  if(state.loading&&!state.response){$('#results-subtitle').textContent='Checking connections…';list.innerHTML='<div class="loading"><i></i><strong>Looking beyond the nearest station</strong><span>Checking service times, bike docks and streets.</span></div>';return;}
@@ -93,7 +101,9 @@ function initMap(){
  };
  vehicleMap=attachVehicleMap({map,L,api,getRoute:()=>state.journey?.route||currentRoutes()[state.selected],
    onSelect:selectVehicle,onSnapshot:(view,result)=>liveExplore?.vehicleReport(view,result)});
- liveExplore=attachLiveExplore({map,L,api,vehicles:vehicleMap,getLocation:()=>state.origin?.coordinate,onSelect:selectVehicle});
+ liveExplore=attachLiveExplore({map,L,api,vehicles:vehicleMap,getLocation:()=>state.origin?.coordinate,onSelect:selectVehicle,openLineSheet:(title,body)=>{
+   state.modal={type:'line'};openSheet(title,body);return sheet;
+ }});
  vehicleTracking=attachVehicleTracking({map,L,api,findTrip:vehicleMap.findTrip,onReport:vehicleMap.setTrackingReport,onChange:id=>{
    liveExplore.setTracking(Boolean(id));vehicleMap.setSelectedTrip(id);
  }});
@@ -132,8 +142,90 @@ function drawRoute(fit=true){
 }
 function updateFreshness(){const generated=state.response?.generatedAt,age=generated?Math.max(0,Math.floor((Date.now()-Date.parse(generated))/1000)):null,fresh=age!=null&&age<180&&!state.error;$('#freshness').innerHTML=`<i class="status-dot ${fresh?'live':''}"></i>${age==null?'No trip checked yet':age<60?`Checked ${age}s ago`:`Checked ${Math.floor(age/60)}m ago${fresh?'':' · refresh needed'}`}`;const f=state.health?.feeds;$('#source-light').classList.toggle('live',Boolean(f?.subway?.some(s=>!s.stale)&&!f?.bikes?.stale));}
 function openSheet(title,body,footer='',actions=''){if(sheet.open)sheet.close();sheet.innerHTML=`<div class="dialog-header"><h2 id="sheet-title">${esc(title)}</h2><div class="detail-actions">${actions}<button class="close" data-action="close" aria-label="Close">${icon('close')}</button></div></div><div class="dialog-body">${body}</div>${footer?`<div class="dialog-footer">${footer}</div>`:''}`;sheet.showModal();}
-async function choosePlace(endpoint){state.modal={type:'place',endpoint};openSheet(endpoint==='origin'?'Where are you starting?':'Where to?',`<input id="place-query" class="search-input" type="search" placeholder="Search a place, restaurant or address" aria-label="Search NYC places">${endpoint==='origin'?`<button class="place-result" data-action="current-location">${icon('locate')}<span><strong>Use current location</strong><small>Start from your device’s location</small></span></button>`:''}<div id="place-results"><p class="hint">Search NYC restaurants, addresses, landmarks or stations.</p></div>`);$('#place-query').focus();await findPlaces('');}
-async function findPlaces(q){const id=++placeSearchId;try{const d=await api('/places?q='+encodeURIComponent(q));if(id!==placeSearchId||state.modal?.type!=='place')return;state.places=d.places;$('#place-results').innerHTML=d.places.length?d.places.map((p,i)=>`<button class="place-result" data-select-place="${i}">${icon('pin')}<span><strong>${esc(p.name)}</strong><small>${esc(p.neighborhood)}</small></span>${icon('arrow')}</button>`).join(''):'<p class="hint">No matches in NYC. Try a street address or landmark.</p>';}catch(e){if(id===placeSearchId&&$('#place-results'))$('#place-results').innerHTML=`<p class="hint">${esc(e.message)}</p>`;}}
+function cancelPlaceSearch(){clearTimeout(searchTimer);placeAbort?.abort();}
+function choosePlace(endpoint,query=''){
+ cancelPlaceSearch();
+ state.modal={type:'place',endpoint};
+ const title=endpoint==='favorite'?'Add a saved place':endpoint==='origin'?'Where are you starting?':'Where to?';
+ openSheet(title,`<input id="place-query" class="search-input" type="search" placeholder="Search a place, restaurant or address" aria-label="Search NYC places">${endpoint==='origin'?`<button class="place-result" data-action="current-location">${icon('locate')}<span><strong>Use current location</strong><small>Start from your device’s location</small></span></button>`:''}<div id="place-favorites"></div><div id="place-results"></div><p id="place-status" class="hint" role="status"></p>`);
+ $('#place-query').value=query;
+ $('#place-query').focus();
+ findPlaces(query);
+}
+function favoriteButtons(query='',canRemove=false){
+ return state.favoritePlaces.map((item,i)=>{
+  if(!`${item.label} ${item.place.name} ${item.place.neighborhood??''}`.toLowerCase().includes(query.toLowerCase()))return '';
+  return `<div class="place-result-row"><button class="place-result" data-select-favorite="${i}">${icon('bookmark')}<span><strong>${esc(item.label)}</strong><small>${esc(item.place.name)}</small></span>${icon('arrow')}</button>${canRemove?`<button class="place-bookmark" data-remove-favorite="${i}" aria-label="Remove ${esc(item.label)}">${icon('close')}</button>`:''}</div>`;
+ }).join('');
+}
+function renderPlaceFavorites(query){
+ const favorites=state.modal?.endpoint!=='favorite'?favoriteButtons(query):'';
+ $('#place-favorites').innerHTML=favorites?`<h3 class="saved-section-title">Saved places</h3>${favorites}`:'';
+}
+function showPlaceMatches(places,message=''){
+ state.places=places;
+ $('#place-results').innerHTML=places.map((p,i)=>`<div class="place-result-row"><button class="place-result" data-select-place="${i}">${icon('pin')}<span><strong>${esc(p.name)}</strong><small>${esc(p.neighborhood)}</small></span>${icon('arrow')}</button>${state.modal.endpoint==='favorite'?'':`<button class="place-bookmark" data-favorite-result="${i}" aria-label="Save ${esc(p.name)}">${icon('bookmark')}</button>`}</div>`).join('');
+ $('#place-status').textContent=message;
+}
+async function findPlaces(query){
+ cancelPlaceSearch();
+ const q=query.trim(),controller=new AbortController();
+ placeAbort=controller;
+ const options={signal:controller.signal},active=()=>!controller.signal.aborted&&state.modal?.type==='place';
+ renderPlaceFavorites(q);
+ if(!q&&state.landmarks.length){showPlaceMatches(state.landmarks);return;}
+ if(q.length===1){showPlaceMatches([],'Enter at least two characters.');return;}
+ const path='/places?q='+encodeURIComponent(q);
+ showPlaceMatches([],'Searching NYC…');
+ try{
+  if(q&&!/^\d/.test(q)){
+   const nearby=await api(path+'&directory=1',options);
+   if(!active())return;
+   if(nearby.complete!==false){showPlaceMatches(nearby.places,nearby.places.length?'':'No matches in NYC. Try a street address or landmark.');return;}
+   if(nearby.places.length)showPlaceMatches(nearby.places,'Checking other places…');
+  }
+  const result=await api(path,options);
+  if(!active())return;
+  if(!q)state.landmarks=result.places;
+  showPlaceMatches(result.places,result.places.length?'':'No matches in NYC. Try a street address or landmark.');
+ }catch(e){if(active())$('#place-status').textContent=e.message;}
+}
+function selectEndpoint(place,endpoint){
+ if(!place||!endpoint)return;
+ if(endpoint==='favorite'){nameFavorite(place,endpoint);return;}
+ cancelPlaceSearch();
+ setMainView('directions');
+ const other=endpoint==='origin'?'destination':'origin';
+ if(endpoint==='origin'){currentLocation.cancel();state.location={status:'idle'};}
+ if(state[other]?.id===place.id)[state.origin,state.destination]=[state.destination,state.origin];
+ else state[endpoint]=place;
+ state.travelMode='all';
+ sheet.close();state.modal=null;clearTrip();renderRoutes();drawRoute(false);planTrip();
+}
+function nameFavorite(place,endpoint){
+ if(!place)return;
+ cancelPlaceSearch();
+ const label=state.favoritePlaces.find(item=>item.place.id===place.id)?.label||'';
+ state.modal={type:'favorite',place,endpoint,query:$('#place-query')?.value||''};
+ openSheet('Save place',`<form id="favorite-place-form"><p class="dialog-copy">${esc(place.name)}</p><label class="field-label" for="favorite-place-name">Name</label><input id="favorite-place-name" name="label" class="search-input" placeholder="Home, Work, or another name" value="${esc(label)}" maxlength="40" required></form>`,`<button type="button" class="text-button" data-action="back-to-place-search">Back</button><button class="primary" type="submit" form="favorite-place-form">Save place</button>`);
+ $('#favorite-place-name').focus();
+}
+function updateFavorites(next){
+ try{localStorage.setItem(favoritePlaceStorage,JSON.stringify(next));state.favoritePlaces=next;return true;}
+ catch{toast('This browser couldn’t update saved places.');return false;}
+}
+function returnToPlaceSearch({endpoint,query}){
+ if(endpoint==='favorite'){savedTrips();return;}
+ choosePlace(endpoint,query);
+}
+function saveFavorite(label){
+ const modal=state.modal;
+ if(modal?.type!=='favorite'||!label)return;
+ const {place}=modal;
+ const next=[{label,place},...state.favoritePlaces.filter(item=>item.place.id!==place.id)].slice(0,30);
+ if(!updateFavorites(next))return;
+ returnToPlaceSearch(modal);toast(`${label} saved.`);
+}
 
 function preferences(draft=state.preferences,{fromLink=false}={}){
  state.modal={type:'preferences'};const p=draft,pace=(title,key)=>`<label><span>${title}</span><input type="number" name="${key}" inputmode="decimal" aria-label="${title} in miles per hour" min="4" max="18" step="0.1" placeholder="Auto" value="${esc(p[key]??'')}"><small>mph</small></label>`,range=(title,key,min,max,step,unit='')=>`<div class="range-row"><label for="${key}">${title}<output data-output="${key}">${key==='maxFareCents'?money(p[key]):p[key]+unit}</output></label><input id="${key}" name="${key}" type="range" min="${min}" max="${max}" step="${step}" value="${p[key]}" data-unit="${unit}"></div>`;
@@ -244,7 +336,11 @@ function closeJourney({focus=true}={}){
  if(focus)$(`[data-route="${state.selected}"]`)?.focus({preventScroll:true});
 }
 function saveTrip(){const id=state.origin.id+'|'+state.destination.id+'|'+state.preferences.bikeSource;if(state.saved.some(s=>s.id===id)){toast('This trip is already saved.');return;}const next=[{id,origin:state.origin,destination:state.destination,preferences:{...state.preferences}},...state.saved].slice(0,30);try{localStorage.setItem('crosstown.saved.v2',JSON.stringify(next));state.saved=next;toast('Trip saved. It will search fresh data when reopened.');}catch{toast('This browser couldn’t save the trip.');}}
-function savedTrips(){state.modal={type:'saved'};openSheet('Saved trips',`<p class="dialog-copy">Saved trips always search again with current data.</p>${state.saved.length?state.saved.map((s,i)=>`<div style="display:flex;align-items:center"><button class="saved-trip" data-saved="${i}">${icon('bookmark')}<span><strong>${esc(s.origin.name)} → ${esc(s.destination.name)}</strong><small>${labels[s.preferences.priority]} · ${s.preferences.bikeSource==='ownBike'?'My bike':'Citi Bike'}</small></span></button><button class="icon-button" data-remove-saved="${i}" aria-label="Remove saved trip">${icon('close')}</button></div>`).join(''):`<div class="empty">${icon('bookmark')}<h3>Keep a good connection.</h3><p>Open a route and tap the bookmark.</p></div>`}`);}
+function savedTrips(){
+ state.modal={type:'saved'};
+ const journeys=state.saved.map((s,i)=>`<div class="place-result-row"><button class="saved-trip" data-saved="${i}">${icon('bookmark')}<span><strong>${esc(s.origin.name)} → ${esc(s.destination.name)}</strong><small>${labels[s.preferences.priority]} · ${s.preferences.bikeSource==='ownBike'?'My bike':'Citi Bike'}</small></span></button><button class="place-bookmark" data-remove-saved="${i}" aria-label="Remove saved trip">${icon('close')}</button></div>`).join('');
+ openSheet('Saved',`<section><h3 class="saved-section-title">Places</h3>${favoriteButtons('',true)}<button class="text-button add-favorite" data-place="favorite">Add a place</button></section><section><h3 class="saved-section-title">Trips</h3>${journeys||'<p class="hint">Open a route and tap the bookmark to save it.</p>'}</section>`);
+}
 async function sources(){
  state.modal={type:'sources'};openSheet('Live sources','<div class="loading"><i></i><span>Checking providers…</span></div>');
  try{const h=await api('/health');state.health=h;if(state.modal?.type!=='sources')return;
@@ -447,6 +543,7 @@ function setMainView(view){
 document.addEventListener('submit',event=>{
  if(event.target.id==='timing-form'){event.preventDefault();applyDeparture();}
  if(event.target.id==='preferences-form'){event.preventDefault();applyPreferences();}
+ if(event.target.id==='favorite-place-form'){event.preventDefault();saveFavorite(event.target.elements.label.value.trim());}
 });
 document.addEventListener('change',event=>{
  if(event.target.name!=='timeMode')return;
@@ -463,10 +560,13 @@ document.addEventListener('click',event=>{
  if(b.dataset.travelMode){state.travelMode=b.dataset.travelMode;state.selected=0;renderRoutes();mobileLayout.showRoutes();drawRoute();return;}
  if(b.dataset.priority){state.preferences.priority=b.dataset.priority;planTrip();return;}
  if(b.dataset.place){choosePlace(b.dataset.place);return;}
- if(b.dataset.selectPlace!=null){const p=state.places[Number(b.dataset.selectPlace)],key=state.modal.endpoint,other=key==='origin'?'destination':'origin';if(key==='origin'){currentLocation.cancel();state.location={status:'idle'};}if(state[other]?.id===p.id)[state.origin,state.destination]=[state.destination,state.origin];else state[key]=p;sheet.close();state.modal=null;planTrip();return;}
+ if(b.dataset.selectPlace!=null){selectEndpoint(state.places[Number(b.dataset.selectPlace)],state.modal?.endpoint);return;}
+ if(b.dataset.favoriteResult!=null){nameFavorite(state.places[Number(b.dataset.favoriteResult)],state.modal?.endpoint);return;}
+ if(b.dataset.selectFavorite!=null){selectEndpoint(state.favoritePlaces[Number(b.dataset.selectFavorite)]?.place,state.modal?.endpoint??'destination');return;}
+ if(b.dataset.removeFavorite!=null){if(updateFavorites(state.favoritePlaces.filter((_,i)=>i!==Number(b.dataset.removeFavorite))))savedTrips();return;}
  if(b.dataset.route!=null){state.selected=Number(b.dataset.route);renderRoutes();detail(currentRoutes()[state.selected],{focus:true,expand:true});return;}
  if(b.dataset.journeyLeg!=null){fitJourneyLeg(Number(b.dataset.journeyLeg));return;}
- if(b.dataset.saved!=null){setMainView('directions');currentLocation.cancel();state.location={status:'idle'};const s=state.saved[Number(b.dataset.saved)];state.origin=s.origin;state.destination=s.destination;state.preferences={...defaults(),...s.preferences,...bikePaces(state.preferences)};state.timing={mode:'now',time:null};sheet.close();state.modal=null;if(state.origin.id===CURRENT_LOCATION_ID)useCurrentLocation();else planTrip();return;}
+ if(b.dataset.saved!=null){setMainView('directions');currentLocation.cancel();state.location={status:'idle'};const s=state.saved[Number(b.dataset.saved)];state.origin=s.origin;state.destination=s.destination;state.preferences={...defaults(),...s.preferences,...bikePaces(state.preferences)};state.travelMode='all';state.timing={mode:'now',time:null};sheet.close();state.modal=null;if(state.origin.id===CURRENT_LOCATION_ID)useCurrentLocation();else planTrip();return;}
  if(b.dataset.removeSaved!=null){state.saved.splice(Number(b.dataset.removeSaved),1);try{localStorage.setItem('crosstown.saved.v2',JSON.stringify(state.saved));savedTrips();}catch{toast('Couldn’t update saved trips.');}return;}
  switch(b.dataset.action){
   case'journey-back':closeJourney();break;
@@ -476,13 +576,14 @@ document.addEventListener('click',event=>{
   case'nav-follow':followNavigation();break;
   case'nav-confirm':state.journey?.navigator?.confirm();break;
   case'nav-replan':replanNavigation();break;
-  case'close':sheet.close();state.modal=null;break;
+  case'close':cancelPlaceSearch();sheet.close();state.modal=null;break;
+  case'back-to-place-search':if(state.modal?.type==='favorite')returnToPlaceSearch(state.modal);break;
   case'preferences':preferences();break;
   case'apply-preferences':applyPreferences();break;
   case'reset-preferences':preferences(defaults());break;
   case'current-location':useCurrentLocation();break;
   case'refresh':refreshTrip();break;
-  case'swap':currentLocation.cancel();state.location={status:'idle'};[state.origin,state.destination]=[state.destination,state.origin];refreshTrip();break;
+  case'swap':currentLocation.cancel();state.location={status:'idle'};state.travelMode='all';[state.origin,state.destination]=[state.destination,state.origin];refreshTrip();break;
   case'fit':drawRoute();break;
   case'sources':sources();break;
   case'bus-setup':busSetup();break;
@@ -492,9 +593,18 @@ document.addEventListener('click',event=>{
   case'departure':departure();break;
  }
 });
-document.addEventListener('input',event=>{const x=event.target;if(x.id==='place-query'){clearTimeout(searchTimer);const v=x.value;searchTimer=setTimeout(()=>findPlaces(v),650);}if(x.type==='range'){const out=$(`[data-output="${x.name}"]`);if(out)out.textContent=x.name==='maxFareCents'?money(Number(x.value)):x.value+x.dataset.unit;}});
+document.addEventListener('input',event=>{
+ const x=event.target;
+ if(x.id==='place-query'){
+  cancelPlaceSearch();
+  const value=x.value.trim();
+  if(value.length<2)findPlaces(value);
+  else{renderPlaceFavorites(value);showPlaceMatches([],'Searching NYC…');searchTimer=setTimeout(()=>findPlaces(value),150);}
+ }
+ if(x.type==='range'){const out=$(`[data-output="${x.name}"]`);if(out)out.textContent=x.name==='maxFareCents'?money(Number(x.value)):x.value+x.dataset.unit;}
+});
 document.addEventListener('change',event=>{if(event.target.name==='bikeSource')bikeFields();if(event.target.name==='custom')$('#custom-weights').hidden=!event.target.checked;});
-sheet.addEventListener('cancel',()=>{state.modal=null;placeSearchId++;});sheet.addEventListener('click',event=>{if(event.target!==sheet)return;const r=sheet.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom){sheet.close();state.modal=null;placeSearchId++;}});
+sheet.addEventListener('cancel',()=>{cancelPlaceSearch();state.modal=null;});sheet.addEventListener('click',event=>{if(event.target!==sheet)return;const r=sheet.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom){cancelPlaceSearch();sheet.close();state.modal=null;}});
 hydrate();currentLocation.request();initMap();drawRoute(false);
 function openLinkedBikePaces(){
  const sharedPaces=linkedBikePaces(location.hash);
@@ -504,6 +614,6 @@ function openLinkedBikePaces(){
 }
 openLinkedBikePaces();
 window.addEventListener('hashchange',openLinkedBikePaces);
-try{const [d,health]=await Promise.all([api('/places'),api('/health?feeds=0')]);state.places=d.places;state.health=health;if(health.router.mode==='community'){app.dataset.hosted='true';map.attributionControl.addAttribution('<a href="https://transitous.org/sources/" target="_blank" rel="noopener">Transitous</a>');}else state.destination??=d.places.find(p=>p.id==='ues')??d.places[1];renderRoutes();if(new URLSearchParams(location.search).get('setup')==='bus-time'&&state.health.localSetupAvailable)busSetup();await planTrip();}catch(e){state.loading=false;state.error=e.message;renderRoutes();}
+try{const [d,health]=await Promise.all([api('/places'),api('/health?feeds=0')]);state.landmarks=d.places;state.health=health;if(health.router.mode==='community'){app.dataset.hosted='true';map.attributionControl.addAttribution('<a href="https://transitous.org/sources/" target="_blank" rel="noopener">Transitous</a>');}else state.destination??=d.places.find(p=>p.id==='ues')??d.places[1];renderRoutes();if(new URLSearchParams(location.search).get('setup')==='bus-time'&&state.health.localSetupAvailable)busSetup();await planTrip();}catch(e){state.loading=false;state.error=e.message;renderRoutes();}
 setInterval(()=>{updateFreshness();if(document.hidden)return;if(state.mainView==='directions'&&state.health?.router?.ready&&state.health.router.mode!=='community'&&!sheet.open&&!state.journey&&!state.loading&&state.origin)refreshTrip({quiet:true});},30000);
 window.addEventListener('resize',()=>{map?.invalidateSize();drawRoute(false);});

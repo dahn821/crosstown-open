@@ -21,7 +21,7 @@ function groupIntersections(stops){
   return groups;
 }
 
-export function nearbyBusBoard(store,busStops,coordinate,{stop,line}={},now=Date.now()){
+export function nearbyBusBoard(store,busStops,coordinate,{stop,line,routeStops=false}={},now=Date.now()){
   const focused=stop&&busStopID(stop),nearby=[];
   for(const item of busStops){
     if(!Number.isFinite(item.lat)||!Number.isFinite(item.lon))continue;
@@ -35,7 +35,7 @@ export function nearbyBusBoard(store,busStops,coordinate,{stop,line}={},now=Date
   const stopIds=new Set(candidates.flatMap(group=>group.members));
   const departures=store.departures(nearby,now,{mode:'bus',line,stopIds,limit:Infinity});
   const liveStops=new Set(departures.map(departure=>departure.stationId));
-  const stations=candidates.filter(group=>focused||!line||liveStops.has(group.id)).slice(0,boardSize).map(({members,...group})=>group);
+  const stations=candidates.filter(group=>focused||!line||routeStops||liveStops.has(group.id)).slice(0,boardSize).map(({members,...group})=>group);
   const visible=new Set(stations.map(item=>item.id));
   return {stations,departures:departures.filter(item=>visible.has(item.stationId))};
 }

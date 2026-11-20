@@ -26,8 +26,12 @@ export function restaurantPlaces(rows){
   return [...records.values()].map(record=>record.place).sort((a,b)=>a.id.localeCompare(b.id));
 }
 
-function score(place,queries){
+function terms(place){
   const name=normalizePlaceQuery(place.name),all=normalizePlaceQuery(place.name+' '+place.neighborhood),words=name.split(' '),allWords=all.split(' ');
+  return {place,name,words,allWords};
+}
+
+function score({name,words,allWords},queries){
   return Math.max(0,...queries.map(query=>{
     if(name===query)return 1000;
     if(name.startsWith(query))return 850;
@@ -41,9 +45,16 @@ function score(place,queries){
 }
 
 export function searchRestaurantPlaces(places,query,limit=12){
+  return searchDirectory(places.map(terms),query,limit);
+}
+
+function searchDirectory(directory,query,limit=12){
   const queries=variants(query);
   if(!queries.length)return [];
-  return places.map(place=>({place,score:score(place,queries)})).filter(hit=>hit.score>0).sort((a,b)=>b.score-a.score||a.place.name.localeCompare(b.place.name)||a.place.neighborhood.localeCompare(b.place.neighborhood)).slice(0,limit).map(hit=>hit.place);
+  return directory.flatMap(entry=>{
+    const match=score(entry,queries);
+    return match?[{place:entry.place,score:match}]:[];
+  }).sort((a,b)=>b.score-a.score||a.place.name.localeCompare(b.place.name)||a.place.neighborhood.localeCompare(b.place.neighborhood)).slice(0,limit).map(hit=>hit.place);
 }
 
 export function photonPlaces(data,query){
@@ -58,7 +69,7 @@ export function photonPlaces(data,query){
 }
 
 export function mergePlaces(groups,query,limit=12){
-  const queries=variants(query),ranked=groups.flatMap((places,group)=>places.map((place,index)=>({place,score:score(place,queries),group,index}))).sort((a,b)=>b.score-a.score||a.group-b.group||a.index-b.index),result=[];
+  const queries=variants(query),ranked=groups.flatMap((places,group)=>places.map((place,index)=>({place,score:score(terms(place),queries),group,index}))).sort((a,b)=>b.score-a.score||a.group-b.group||a.index-b.index),result=[];
   for(const {place} of ranked){
     if(result.some(existing=>existing.id===place.id||(variants(existing.name).some(name=>variants(place.name).includes(name))&&distance(existing.coordinate,place.coordinate)<100)))continue;
     result.push(place);if(result.length===limit)break;
@@ -68,18 +79,22 @@ export function mergePlaces(groups,query,limit=12){
 
 export function createPlaceSearch({restaurants=[],landmarks=[],dataUpdatedAt=null,fetcher=fetch,timeoutMs=2000,now=Date.now}={}){
   const cache=new Map(),pending=new Map();
-  return async function search(query){
-    const q=String(query??'').trim().slice(0,160),key=normalizePlaceQuery(q);
-    if(!key)return {places:landmarks,source:'Saved city landmarks'};
+  let restaurantDirectory;
+  const cityDirectory=landmarks.map(terms);
+  return async function search(query,{directoryOnly=false}={}){
+    const q=String(query??'').trim().slice(0,160),normalized=normalizePlaceQuery(q);
+    if(!normalized)return {places:landmarks,source:'Saved city landmarks'};
+    const key=(directoryOnly?'directory|':'')+normalized;
     const cached=cache.get(key);if(cached&&cached.until>now())return cached.result;
     if(pending.has(key))return pending.get(key);
     const job=(async()=>{
-      const local=searchRestaurantPlaces(restaurants,q),saved=searchRestaurantPlaces(landmarks,q),queries=variants(q);
+      restaurantDirectory??=restaurants.map(terms);
+      const local=searchDirectory(restaurantDirectory,q),saved=searchDirectory(cityDirectory,q),queries=variants(q);
       const exact=[...saved,...local].some(place=>queries.includes(normalizePlaceQuery(place.name)));
       let remote=[],unavailable=false;
       // Exact local names need no network round trip. Prefix/address searches
       // also consult Photon so the restaurant directory cannot hide other POIs.
-      if(!exact){
+      if(!exact&&!directoryOnly){
         const endpoint=new URL('https://photon.komoot.io/api/');
         endpoint.search=new URLSearchParams({q,lat:'40.75',lon:'-73.98',limit:'12',bbox:`${bounds.west},${bounds.south},${bounds.east},${bounds.north}`}).toString();
         try{
@@ -90,7 +105,7 @@ export function createPlaceSearch({restaurants=[],landmarks=[],dataUpdatedAt=nul
         }catch{unavailable=true;}
       }
       if(unavailable&&!local.length&&!saved.length)throw Object.assign(Error('Place search is temporarily unavailable. Please try again.'),{status:503});
-      const result={places:mergePlaces([saved,local,remote],q),source:[...saved.length?['Saved city landmarks']:[],...local.length?[restaurantSource]:[],...exact?[]:['Photon / OpenStreetMap']].join(' · '),restaurantDataUpdatedAt:dataUpdatedAt,...unavailable?{partial:true}:{}};
+      const result={places:mergePlaces([saved,local,remote],q),source:[...saved.length?['Saved city landmarks']:[],...local.length?[restaurantSource]:[],...exact||directoryOnly?[]:['Photon / OpenStreetMap']].join(' · '),restaurantDataUpdatedAt:dataUpdatedAt,...directoryOnly?{complete:exact}:null,...unavailable?{partial:true}:{}};
       if(cache.size>=100)cache.delete(cache.keys().next().value);
       cache.set(key,{result,until:now()+(unavailable?15000:300000)});return result;
     })().finally(()=>pending.delete(key));

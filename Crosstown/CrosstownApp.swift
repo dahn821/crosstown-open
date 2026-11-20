@@ -57,7 +57,9 @@ final class AppModel {
     var locating = false
     var locationError: String?
     var saved: [SavedJourney] = []
+    var favoritePlaces: [FavoritePlace] = []
     private let savedKey = "crosstown.saved.live.v2"
+    private let favoritePlacesKey = "crosstown.favoritePlaces.v1"
     private let classicPaceKey = "crosstown.bikePace.classic"
     private let lowAssistPaceKey = "crosstown.bikePace.lowAssist"
     private var latestSearch = UUID()
@@ -69,6 +71,8 @@ final class AppModel {
     init() {
         if let data = UserDefaults.standard.data(forKey: savedKey),
            let items = try? JSONDecoder().decode([SavedJourney].self, from: data) { saved = items }
+        if let data = UserDefaults.standard.data(forKey: favoritePlacesKey),
+           let items = try? JSONDecoder().decode([FavoritePlace].self, from: data) { favoritePlaces = items }
         restoreBikePaces()
         locationProvider.warmUp()
     }
@@ -145,7 +149,7 @@ final class AppModel {
             response = result
             departureSelections = departureSelections.filter { result.alternativeRoutes?[$0.value] != nil }
             renderedRequest = query; renderedServer = server; error = nil
-            health = try? await client.health()
+            if let feeds = result.feedStatus { health?.feeds = feeds }
         } catch {
             guard !Task.isCancelled, request == query, server == apiBaseURLString, latestSearch == token else { return }
             response = nil; self.error = error.localizedDescription
@@ -165,11 +169,22 @@ final class AppModel {
             if place.id == request.origin { swap() } else { request.destination = place.id }
         }
     }
-    func searchPlaces(_ query: String) async throws -> [Place] { try await client().places(matching: query) }
-    func refreshHealth() async { health = try? await client().health() }
+    func searchPlaces(_ query: String, directoryOnly: Bool) async throws -> PlaceSuggestions {
+        try await client().placeSuggestions(matching: query, directoryOnly: directoryOnly)
+    }
+    func refreshHealth(includeFeeds: Bool = true) async {
+        let server = apiBaseURLString
+        let report = try? await client().health(includeFeeds: includeFeeds)
+        guard !Task.isCancelled, server == apiBaseURLString else { return }
+        if !includeFeeds, let current = response?.feedStatus, var report {
+            report.feeds = current
+            health = report
+        } else { health = report }
+    }
     func configureServer(_ text: String) async {
         apiBaseURLString = text.trimmingCharacters(in: .whitespacesAndNewlines)
         UserDefaults.standard.set(apiBaseURLString, forKey: "crosstown.server.v2")
+        health = nil
         await refresh()
     }
     var currentSavedID: String { request.origin + "|" + request.destination + "|" + request.preferences.bikeSource.rawValue }
@@ -179,6 +194,19 @@ final class AppModel {
         if let index = saved.firstIndex(where: { $0.id == currentSavedID }) { saved.remove(at: index) }
         else { saved.insert(SavedJourney(origin: origin, destination: destination, preferences: request.preferences), at: 0) }
         if let data = try? JSONEncoder().encode(saved) { UserDefaults.standard.set(data, forKey: savedKey) }
+    }
+    func saveFavorite(_ place: Place, as label: String) {
+        favoritePlaces.removeAll { $0.id == place.id }
+        favoritePlaces.insert(FavoritePlace(label: label, place: place), at: 0)
+        favoritePlaces = Array(favoritePlaces.prefix(30))
+        persistFavorites()
+    }
+    func removeFavorite(_ favorite: FavoritePlace) {
+        favoritePlaces.removeAll { $0.id == favorite.id }
+        persistFavorites()
+    }
+    private func persistFavorites() {
+        if let data = try? JSONEncoder().encode(favoritePlaces) { UserDefaults.standard.set(data, forKey: favoritePlacesKey) }
     }
     func openSaved(_ journey: SavedJourney) {
         select(journey.origin, endpoint: .origin); select(journey.destination, endpoint: .destination)
@@ -293,6 +321,12 @@ struct SavedJourney: Codable, Identifiable {
     var destination: Place
     var preferences: RoutePreferences
     var id: String { origin.id + "|" + destination.id + "|" + preferences.bikeSource.rawValue }
+}
+
+struct FavoritePlace: Codable, Identifiable {
+    var label: String
+    var place: Place
+    var id: String { place.id }
 }
 
 enum Theme {

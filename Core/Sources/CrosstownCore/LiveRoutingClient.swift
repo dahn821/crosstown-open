@@ -15,27 +15,37 @@ public enum LiveRoutingError: Error, LocalizedError {
 public actor LiveRoutingClient {
     private struct Failure: Decodable { var error: String }
     private let baseURL: URL
-    private let session: URLSession
-    public init(baseURL: URL) {
-        self.baseURL = baseURL
+    private static let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 90
         config.timeoutIntervalForResource = 120
-        session = URLSession(configuration: config)
-    }
+        return URLSession(configuration: config)
+    }()
+    public init(baseURL: URL) { self.baseURL = baseURL }
     public func places(matching query: String = "") async throws -> [Place] {
-        struct Result: Decodable { var places: [Place] }
+        try await placeSuggestions(matching: query).places
+    }
+    public func placeSuggestions(matching query: String, directoryOnly: Bool = false) async throws -> PlaceSuggestions {
         var components = URLComponents(url: endpoint("places"), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "q", value: query)]
-        return try await fetch(URLRequest(url: components.url!), as: Result.self).places
+        if directoryOnly { components.queryItems?.append(URLQueryItem(name: "directory", value: "1")) }
+        var request = URLRequest(url: components.url!)
+        request.timeoutInterval = 12
+        return try await fetch(request, as: PlaceSuggestions.self)
     }
-    public func health() async throws -> LiveHealth { try await fetch(URLRequest(url: endpoint("health")), as: LiveHealth.self) }
+    public func health(includeFeeds: Bool = true) async throws -> LiveHealth {
+        var components = URLComponents(url: endpoint("health"), resolvingAgainstBaseURL: false)!
+        if !includeFeeds { components.queryItems = [URLQueryItem(name: "feeds", value: "0")] }
+        return try await fetch(URLRequest(url: components.url!), as: LiveHealth.self)
+    }
     public func vehicles(bounds: [Double], lines: [String] = [], mode: TravelMode? = nil) async throws -> VehicleSnapshot {
         var components = URLComponents(url: endpoint("vehicles"), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "bbox", value: bounds.map { String($0) }.joined(separator: ","))]
         if !lines.isEmpty { components.queryItems?.append(URLQueryItem(name: "lines", value: lines.joined(separator: ","))) }
         if let mode { components.queryItems?.append(URLQueryItem(name: "modes", value: mode.rawValue)) }
-        if mode == .subway { components.queryItems?.append(URLQueryItem(name: "network", value: "1")) }
+        if mode == .subway || (mode == .bus && lines.count == 1) {
+            components.queryItems?.append(URLQueryItem(name: "network", value: "1"))
+        }
         return try await fetch(URLRequest(url: components.url!), as: VehicleSnapshot.self)
     }
     public func vehicleTrip(id: String) async throws -> VehicleTrip {
@@ -69,7 +79,7 @@ public actor LiveRoutingClient {
     private func fetch<T: Decodable & Sendable>(_ request: URLRequest, as type: T.Type) async throws -> T {
         guard let scheme = request.url?.scheme, ["http", "https"].contains(scheme) else { throw LiveRoutingError.invalidURL }
         do {
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await Self.session.data(for: request)
             guard let http = response as? HTTPURLResponse else { throw LiveRoutingError.unavailable("The route server did not respond.") }
             guard http.statusCode == 200 else {
                 let failure = try? JSONDecoder().decode(Failure.self, from: data)
@@ -77,6 +87,7 @@ public actor LiveRoutingClient {
             }
             return try JSONDecoder().decode(T.self, from: data)
         } catch let error as LiveRoutingError { throw error }
+        catch let error as URLError where error.code == .cancelled { throw CancellationError() }
         catch is DecodingError { throw LiveRoutingError.unavailable("The server response could not be read. Update the app and server together.") }
         catch { throw LiveRoutingError.unavailable("Can’t connect to the route server. Check your internet connection and the server address in Sources.") }
     }

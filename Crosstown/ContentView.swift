@@ -8,6 +8,7 @@ struct ContentView: View {
     @Bindable var model: AppModel
     @State private var tab = 0
     @State private var editing: Endpoint?
+    @State private var addingFavorite = false
     @State private var preferencesPresented = false
     @State private var selectedRoute: Itinerary?
     @State private var aboutPresented = false
@@ -31,6 +32,11 @@ struct ContentView: View {
             return route.legs.contains { $0.mode.rawValue == comparisonMode }
                 && (comparisonMode == "bike" || route.legs.allSatisfy { $0.mode.rawValue == comparisonMode || $0.mode == .walk })
         }).map(model.resolvedRoute)
+    }
+    private var walkingComparison: String? {
+        guard comparisonMode == "all", !prefersShelteredTransit, let groups = model.response?.routeGroups,
+              let walk = groups["walk"]?.map(\.minutes).min(), let bike = groups["bike"]?.map(\.minutes).min() else { return nil }
+        return "Walk \(Int(ceil(walk))) min · With bike \(Int(ceil(bike))) min"
     }
 
     var body: some View {
@@ -64,6 +70,8 @@ struct ContentView: View {
                 .overlay(alignment: .top) { Rectangle().fill(Theme.line).frame(height: 0.5) }
         }
         .background(Theme.canvas).foregroundStyle(Theme.ink)
+        .task(id: model.apiBaseURLString) { await model.refreshHealth(includeFeeds: false) }
+        .onChange(of: [model.request.origin, model.request.destination]) { _, _ in comparisonMode = "all" }
         .task(id: model.request) {
             while !Task.isCancelled {
                 await model.refresh()
@@ -72,9 +80,14 @@ struct ContentView: View {
             }
         }
         .sheet(item: $editing) { endpoint in
-            PlacePicker(places: model.places, title: endpoint == .origin ? "Start somewhere" : "Where to?", search: model.searchPlaces, onUseCurrentLocation: endpoint == .origin ? { model.useCurrentLocation() } : nil) { place in
-                model.select(place, endpoint: endpoint)
-            }
+            PlacePicker(places: model.places, favorites: model.favoritePlaces,
+                        title: endpoint == .origin ? "Start somewhere" : "Where to?", search: model.searchPlaces,
+                        onUseCurrentLocation: endpoint == .origin ? { model.useCurrentLocation() } : nil,
+                        onSave: model.saveFavorite) { model.select($0, endpoint: endpoint) }
+        }
+        .sheet(isPresented: $addingFavorite) {
+            PlacePicker(places: model.places, favorites: model.favoritePlaces, title: "Add a saved place",
+                        search: model.searchPlaces, onUseCurrentLocation: nil, onSave: model.saveFavorite, onSelect: nil)
         }
         .sheet(isPresented: $preferencesPresented) {
             PreferencesView(preferences: model.request.preferences, onApply: model.applyPreferences)
@@ -187,6 +200,8 @@ struct ContentView: View {
                     }
                     if prefersShelteredTransit {
                         Text("Subway and bus trips ranked by estimated time outside.").font(.caption).foregroundStyle(Theme.secondary)
+                    } else if let walkingComparison {
+                        Text(walkingComparison).font(.caption).foregroundStyle(Theme.secondary)
                     }
                     if comparedRoutes.isEmpty {
                         VStack(spacing: 12) {
@@ -227,10 +242,33 @@ struct ContentView: View {
     private var savedJourneys: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Your good finds.").font(.system(size: 32, weight: .semibold)).tracking(-1)
-                Text("Saved trips search again with current data.").font(.subheadline).foregroundStyle(Theme.secondary)
+                HStack {
+                    Text("Saved places").font(.title2.bold()).accessibilityAddTraits(.isHeader)
+                    Spacer()
+                    Button { addingFavorite = true } label: {
+                        Label("Add a place", systemImage: "plus").frame(minHeight: 44)
+                    }
+                }
+                ForEach(model.favoritePlaces) { favorite in
+                    HStack(spacing: 8) {
+                        Button { model.select(favorite.place, endpoint: .destination); tab = 0 } label: {
+                            HStack(spacing: 13) {
+                                Image(systemName: "mappin.circle.fill").foregroundStyle(Theme.blue)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(favorite.label).font(.subheadline.weight(.semibold))
+                                    Text(favorite.place.name).font(.caption).foregroundStyle(Theme.secondary)
+                                }
+                                Spacer()
+                            }.padding(.vertical, 13)
+                        }.buttonStyle(.plain)
+                        Button { model.removeFavorite(favorite) } label: {
+                            Image(systemName: "xmark").frame(width: 44, height: 44)
+                        }.accessibilityLabel("Remove \(favorite.label)")
+                    }.padding(.leading, 13).background(.white, in: .rect(cornerRadius: 16))
+                }
+                Text("Saved trips").font(.title2.bold()).accessibilityAddTraits(.isHeader)
                 if model.saved.isEmpty {
-                    ContentUnavailableView("Keep a good connection", systemImage: "bookmark", description: Text("Open a route and tap the bookmark to save it here."))
+                    Text("Open a route and tap the bookmark to save it here.").font(.subheadline).foregroundStyle(Theme.secondary)
                 }
                 ForEach(model.saved) { journey in
                     Button { model.openSaved(journey); tab = 0 } label: {

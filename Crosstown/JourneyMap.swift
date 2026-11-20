@@ -15,7 +15,7 @@ struct JourneyMap: View {
     var stationPredictions: [TransitDeparture] = []
     var onCenterChange: ((Coordinate) -> Void)? = nil
     var onStop: ((String, String, Coordinate) -> Void)? = nil
-    var onVehicleReports: (([LiveVehicle]) -> Void)? = nil
+    var onVehicleSnapshot: ((VehicleSnapshot?) -> Void)? = nil
     @State private var snapshot: VehicleSnapshot?
     @State private var vehicleBounds: [Double]?
     @State private var selectedVehicle: LiveVehicle?
@@ -23,6 +23,7 @@ struct JourneyMap: View {
     @State private var trackingError = false
     @State private var camera: MapCameraPosition?
     @State private var vehicleError: String?
+    @State private var fittedLine = ""
     @State private var reticleFeedback = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var region: MKCoordinateRegion {
@@ -62,15 +63,16 @@ struct JourneyMap: View {
                             lineJoin: .round, dash: leg.mode == .walk ? [2, 7] : []))
                 }
             }
-            if let network = snapshot?.network, liveMode == .subway {
+            if let network = snapshot?.network, let liveMode {
                 ForEach(Array(network.segments.enumerated()), id: \.offset) { _, segment in
                     MapPolyline(coordinates: segmentCoordinates(segment)).stroke(.white, style: railStroke(width: 7))
                 }
                 ForEach(Array(network.segments.enumerated()), id: \.offset) { _, segment in
                     MapPolyline(coordinates: segmentCoordinates(segment))
-                        .stroke(SubwayBadge.color(segment.line, reported: segment.color).opacity(selectedVehicle == nil ? 0.92 : 0.22), style: railStroke(width: 4.5))
+                        .stroke((liveMode == .bus ? Theme.blue : SubwayBadge.color(segment.line, reported: segment.color))
+                            .opacity(selectedVehicle == nil ? 0.92 : 0.22), style: railStroke(width: 4.5))
                 }
-                if queryBounds[2] - queryBounds[0] < 0.11 {
+                if queryBounds[2] - queryBounds[0] < (liveMode == .bus ? 0.06 : 0.11) {
                     ForEach(network.stations) { station in
                         Annotation(station.name, coordinate: CLLocationCoordinate2D(latitude: station.coordinate.latitude, longitude: station.coordinate.longitude)) {
                             stopButton(station.complexId ?? station.id, station.name, station.coordinate)
@@ -78,7 +80,7 @@ struct JourneyMap: View {
                     }.annotationTitles(.hidden)
                 }
             }
-            if liveMode == .bus {
+            if liveMode == .bus, snapshot?.network?.stations.isEmpty != false {
                 ForEach(busStops) { stop in
                     Annotation(stop.name, coordinate: CLLocationCoordinate2D(latitude: stop.coordinate.latitude, longitude: stop.coordinate.longitude)) {
                         stopButton(stop.id, stop.name, stop.coordinate)
@@ -134,6 +136,9 @@ struct JourneyMap: View {
         .onChange(of: origin?.id) { _, _ in camera = nil }
         .onChange(of: destination?.id) { _, _ in camera = nil }
         .onChange(of: route?.choiceId ?? route?.id) { _, _ in camera = nil }
+        .onChange(of: selectedLine) { _, _ in
+            snapshot = nil; selectedVehicle = nil; trackedTrip = nil; fittedLine = ""; vehicleError = nil
+        }
         .task(id: queryID) {
             guard vehiclesEnabled, let apiBaseURLString, let url = URL(string: apiBaseURLString) else {
                 snapshot = nil
@@ -146,11 +151,13 @@ struct JourneyMap: View {
                     let result = try await client.vehicles(bounds: queryBounds, lines: routeLines, mode: liveMode)
                     guard !Task.isCancelled else { return }
                     snapshot = result; vehicleError = nil
-                    onVehicleReports?(result.vehicles)
+                    onVehicleSnapshot?(result)
+                    if !selectedLine.isEmpty, fittedLine != selectedLine, let network = result.network,
+                       fitPath(network.segments.flatMap(segmentCoordinates)) { fittedLine = selectedLine }
                 } catch {
                     guard !Task.isCancelled else { return }
                     snapshot = nil; vehicleError = "Vehicle reports unavailable."
-                    onVehicleReports?([])
+                    onVehicleSnapshot?(nil)
                 }
                 do { try await Task.sleep(for: .seconds(15)) } catch { return }
             }
@@ -314,6 +321,9 @@ struct JourneyMap: View {
         let points = (trip.segments ?? []).flatMap(pathCoordinates) + coordinates.map {
             CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude)
         }
+        return fitPath(points)
+    }
+    private func fitPath(_ points: [CLLocationCoordinate2D]) -> Bool {
         guard let south = points.map(\.latitude).min(), let north = points.map(\.latitude).max(),
               let west = points.map(\.longitude).min(), let east = points.map(\.longitude).max() else { return false }
         camera = .region(MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: (north + south) / 2, longitude: (west + east) / 2),

@@ -18,6 +18,7 @@ const paths={
   start:'M12 3a9 9 0 1 0 .01 0M12 8a4 4 0 1 0 .01 0',
   weather:'M7 16a4 4 0 0 1 0-8 5 5 0 0 1 9 2 3 3 0 1 1 1 6H7ZM14 2v2m6 1-2 2m4 3h-2M4 20h13',
   refresh:'M20 10a8 8 0 1 0-2 8M20 3v7h-7',check:'m5 12 4 4L20 5',share:'M12 16V2m-4 4 4-4 4 4M5 10H3v12h18V10h-2',dock:'M5 21V3h8a5 5 0 0 1 0 10H5',
+  scan:'M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5M9 9h6v6H9Z',
 };
 Object.assign(paths,{search:'M10 3a7 7 0 1 0 .01 0M15 15l6 6',clock:'M12 3a9 9 0 1 0 .01 0M12 7v5l3 2',activity:'M2 12h5l3-8 4 16 3-8h5',locate:'M12 8a4 4 0 1 0 .01 0M12 2v3m0 14v3M2 12h3m14 0h3'});
 export const icon=(name)=>`<svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><path d="${paths[name]||paths.arrow}"/></svg>`;

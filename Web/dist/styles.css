@@ -17,3 +17,11 @@
 @media(max-width:700px){.vehicle-map-control{left:16px;right:auto;top:248px;width:195px;padding:9px 12px}.vehicle-layer-title{font-size:11px;min-height:26px}.vehicle-map-status{font-size:9px;margin:4px 0}.vehicle-expand{font-size:10px;min-height:25px}.vehicle-explore .vehicle-map-control{top:78px}.vehicle-explore .map-actions{bottom:40px}.vehicle-explore .leaflet-bottom{top:auto!important;bottom:0!important}}
 .vehicle-pin{transform:translate(-50%,-50%)}.vehicle-pin.compact{min-width:22px;min-height:22px;padding:3px;border-radius:50%}.vehicle-pin.compact .icon{width:11px;height:11px}.vehicle-pin-container:focus-visible .vehicle-pin{outline:3px solid #172b33;outline-offset:3px}
 .train-choices{margin-top:12px}.departure-choice{display:flex;justify-content:space-between;align-items:center;gap:12px;width:100%;padding:12px 4px;text-align:left;border:0;border-bottom:1px solid #e3e7ee;background:transparent;color:#172037;cursor:pointer}.departure-choice span:first-child{display:grid;gap:5px}.departure-choice small{color:#657184}.departure-choice[aria-pressed="true"]{color:#2d5bff}.mode-part{gap:4px}.mode-strip{flex-wrap:wrap}
+
+.place-result-row { display:flex; align-items:center; border-bottom:1px solid var(--line); }
+.place-result-row > :is(.place-result,.saved-trip) { flex:1; min-width:0; border:0; overflow-wrap:anywhere; }
+.place-bookmark { display:grid; place-items:center; flex:0 0 44px; height:44px; margin-left:6px; color:#294d67; border-radius:10px; }
+.place-bookmark:is(:hover,:focus-visible) { background:#edf3f8; }
+.place-bookmark .icon { width:18px; height:18px; }
+.saved-section-title { margin:13px 0 2px; font-size:13px; font-weight:700; }
+.add-favorite { min-height:44px; }

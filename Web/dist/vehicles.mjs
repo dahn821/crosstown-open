@@ -142,7 +142,7 @@ export function attachVehicleMap({map,L,api,getRoute,onSelect,onSnapshot=()=>{}}
     const b=map.getBounds(),params=new URLSearchParams({bbox:[b.getWest(),b.getSouth(),b.getEast(),b.getNorth()].map(bound=>bound.toFixed(5)).join(','),modes:modes.join(',')});
     const route=getRoute(),lines=[...new Set(route?.legs.map(l=>l.line).filter(Boolean)||[])];
     const routeOnly=control.querySelector('[name="routeOnly"]');routeOnly.disabled=!lines.length;
-    if(view==='subway')params.set('network','1');
+    if(view==='subway'||view==='bus'&&line)params.set('network','1');
     if(view!=='directions'&&line)params.set('lines',line);
     else if(view==='directions'&&routeOnly.checked&&lines.length)params.set('lines',lines.join(','));
     const query=params.toString(),now=Date.now();

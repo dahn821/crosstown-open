@@ -12,6 +12,10 @@
   <button data-live-view="bike" aria-pressed="false"><span data-icon="bike"></span>Bike</button>
 </nav>
 <nav class="utilities" aria-label="App tools"><button class="tool square" data-action="saved" aria-label="Saved trips"><span data-icon="bookmark"></span></button><button class="tool square" data-action="sources" aria-label="Live data sources and connection"><span data-icon="activity"></span><i id="source-light"></i></button></nav>
+<div class="live-map-actions">
+  <button id="live-line-filter" class="live-map-button" aria-haspopup="dialog" hidden><span class="live-line-current"></span><span aria-hidden="true">⌄</span></button>
+  <a id="live-bike-scan" class="live-map-button" href="https://bkn.lft.to/lastmile_qr_scan" hidden><span data-icon="scan"></span>Scan a Citi Bike</a>
+</div>
 <section id="live-explore" aria-labelledby="live-title" hidden>
   <div class="live-header">
     <button data-live-toggle aria-controls="live-detail" aria-expanded="true"><span class="live-title" id="live-title"></span><small class="live-count"></small></button>
@@ -21,7 +25,6 @@
   <div class="live-detail" id="live-detail">
     <div class="live-toolbar">
       <p class="live-map-report" role="status"></p>
-      <label class="live-filter"><span class="visually-hidden">Filter by line</span><select id="live-line-filter"><option value="">All lines</option></select></label>
     </div>
     <div class="live-legend" aria-label="Dock marker legend"><span> Bikes available</span><span> E-bikes only</span><span> No bikes</span></div>
     <div class="transit-nearby" role="group" aria-label="Nearby transit stops" hidden></div>

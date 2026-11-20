@@ -246,6 +246,11 @@ public struct LiveHealth: Codable, Sendable {
     public var feeds: LiveFeedStatus
 }
 
+public struct PlaceSuggestions: Decodable, Sendable {
+    public var places: [Place]
+    public var complete: Bool?
+}
+
 public struct TransitDeparture: Codable, Identifiable, Sendable {
     public var id: String
     public var mode: TravelMode
@@ -445,6 +450,7 @@ public struct VehicleTrip: Codable, Sendable {
 }
 public struct VehicleSnapshot: Codable, Sendable {
     public var vehicles: [LiveVehicle]
+    public var availableLines: [String]? = nil
     public var generatedAt: String
     public var feedStatus: LiveFeedStatus
     public var refreshSeconds: Int

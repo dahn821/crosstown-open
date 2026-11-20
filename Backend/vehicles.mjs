@@ -1,4 +1,5 @@
-import {busID,busLineName,subwayFeeds} from './feeds.mjs';
+import {busID,busLineName,lineFeeds,subwayFeeds} from './feeds.mjs';
+import {busLineNetwork} from './bus-trip-shapes.mjs';
 import {canceledTrip,findTripUpdate,indexTripUpdates,positionReportTime,trackingId} from './trip-reports.mjs';
 import {liveTrain,trainPosition} from './subway-live.mjs';
 
@@ -27,7 +28,7 @@ export function vehicleQuery(params){
   if(!modes.length||modes.some(m=>!['bus','subway'].includes(m)))throw error('Choose bus or subway map layers.');
   const lines=(params.get('lines')||'').split(',').map(s=>s.trim()).filter(Boolean);
   if(lines.length>40||lines.some(l=>l.length>30||!/^[a-z0-9+ -]+$/i.test(l)))throw error('Choose valid transit lines.');
-  return {bounds,modes,lines,network:params.get('network')==='1'&&modes.includes('subway')};
+  return {bounds,modes,lines,network:params.get('network')==='1'&&(modes.includes('subway')||(modes.includes('bus')&&lines.length===1))};
 }
 function subwayNetwork(updates,store,lines,bounds,segments,stations,missing){
   const index=store.tripIndex,catalog=store.subwayCatalog;
@@ -73,6 +74,13 @@ export function reportedPosition(store,mode,vehicle,measured){
 }
 
 export function vehicleSnapshot(store,{bounds=nyc,modes=['bus','subway'],lines=[],now=Date.now(),network=false}={}){
+  const availableLines=new Set(modes.includes('subway')?Object.keys(lineFeeds):[]);
+  if(modes.includes('bus')&&store.busKey&&!store.freshness('bus').stale){
+    for(const entity of store.entries.get('bus')?.message?.entity||[]){
+      const route=entity.tripUpdate?.trip?.routeId;
+      if(route&&!canceledTrip(entity))availableLines.add(busLineName(route));
+    }
+  }
   const vehicles=new Map(),segments=new Map(),stations=new Map(),missing=new Set(),inside=c=>c.longitude>=bounds[0]&&c.longitude<=bounds[2]&&c.latitude>=bounds[1]&&c.latitude<=bounds[3]&&c.longitude>=nyc[0]&&c.longitude<=nyc[2]&&c.latitude>=nyc[1]&&c.latitude<=nyc[3];
   for(const [feed,entry] of store.entries){
     const mode=feed==='busVehicles'?'bus':'subway';
@@ -81,18 +89,19 @@ export function vehicleSnapshot(store,{bounds=nyc,modes=['bus','subway'],lines=[
     const updates=indexTripUpdates(store.freshness(predictionFeed).stale?null:predictionEntry);
     if(network&&mode==='subway'){
       const active=[...updates.values()].flatMap(group=>[...group.values()].filter(e=>!canceledTrip(e)).map(e=>e.tripUpdate));
-      subwayNetwork(active,store,lines,bounds,segments,stations,missing);
+      subwayNetwork(active,store,lines,lines.length===1?nyc:bounds,segments,stations,missing);
     }
     const eligible=line=>!lines.length||lines.some(candidate=>mode==='bus'?busID(candidate)===busID(line):candidate===line);
     for(const entity of entry.message?.entity||[]){
       const v=entity.vehicle,trip=v?.trip;
       if(entity.isDeleted||!v||!trip?.routeId||[3,7].includes(trip.scheduleRelationship))continue;
+      const line=displayLine(mode,trip.routeId);
+      availableLines.add(line);
+      if(!eligible(line))continue;
       const match=findTripUpdate(updates,trip,candidate=>mode==='bus'?busID(candidate.routeId)===busID(trip.routeId):candidate.routeId===trip.routeId);
       if(canceledTrip(match))continue;
       const measured=positionReportTime(v,now);
       if(measured==null)continue;
-      const line=displayLine(mode,trip.routeId);
-      if(!eligible(line))continue;
       const update=match?.tripUpdate,ref=trackingId(predictionFeed,update?.trip||trip);
       const positionReport=reportedPosition(store,mode,v,measured);
       if(!positionReport)continue;
@@ -114,5 +123,13 @@ export function vehicleSnapshot(store,{bounds=nyc,modes=['bus','subway'],lines=[
   const distance=v=>(v.coordinate.latitude-center.latitude)**2+(v.coordinate.longitude-center.longitude)**2;
   const all=[...vehicles.values()].sort((a,b)=>Number(!!b.nextStop?.due)-Number(!!a.nextStop?.due)||distance(a)-distance(b)),counts=new Map();
   const visible=all.filter(v=>{const n=counts.get(v.mode)||0;counts.set(v.mode,n+1);return n<125;});
-  return {vehicles:visible,generatedAt:new Date(now).toISOString(),feedStatus:store.status(),refreshSeconds:15,maxVehicleAgeSeconds:90,truncated:visible.length<all.length,totalInView:all.length,...(network?{network:{segments:[...segments.values()],stations:[...stations.values()],unmatchedSegments:missing.size}}:{}),notice:'Bus markers use reported GPS. Subway movement and arrival estimates use live station observations.'};
+  return {vehicles:visible,availableLines:[...availableLines],generatedAt:new Date(now).toISOString(),feedStatus:store.status(),refreshSeconds:15,maxVehicleAgeSeconds:90,truncated:visible.length<all.length,totalInView:all.length,...(network&&modes.includes('subway')?{network:{segments:[...segments.values()],stations:[...stations.values()],unmatchedSegments:missing.size}}:{}),notice:'Bus markers use reported GPS. Subway movement and arrival estimates use live station observations.'};
+}
+
+export async function vehicleResponse(store,query){
+  const result=vehicleSnapshot(store,query);
+  if(query.network&&query.modes.length===1&&query.modes[0]==='bus'&&query.lines.length===1){
+    result.network=await busLineNetwork(store,query.lines[0]);
+  }
+  return result;
 }

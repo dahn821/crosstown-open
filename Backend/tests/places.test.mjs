@@ -34,6 +34,18 @@ test('an exact restaurant name is immediately selectable without the address pro
   assert.equal(result.restaurantDataUpdatedAt,'2026-11-17T18:00:02.000Z');
 });
 
+test('local suggestions can render before the full address search finishes',async()=>{
+  let requests=0;
+  const search=createPlaceSearch({restaurants,fetcher:async()=>{requests++;return response([feature('Chai House',[-73.98,40.75])]);}});
+  const preview=await search('cha',{directoryOnly:true});
+  assert.equal(preview.places[0].name,'CHADA');
+  assert.equal(preview.complete,false);
+  assert.equal((await search('chada nyc',{directoryOnly:true})).complete,true);
+  assert.equal(requests,0);
+  assert((await search('cha')).places.some(place=>place.name==='Chai House'));
+  assert.equal(requests,1);
+});
+
 test('partial names combine both sources and preserve distinct branches',async()=>{
   let requested;
   const branch={...restaurants.find(place=>place.name==='CHADA'),id:'branch',coordinate:{latitude:40.78,longitude:-73.96},neighborhood:'Second address'};

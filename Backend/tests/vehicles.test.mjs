@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {FeedStore} from '../feeds.mjs';
-import {vehicleQuery,vehicleSnapshot,vehicleDirection} from '../vehicles.mjs';
+import {vehicleQuery,vehicleSnapshot,vehicleResponse,vehicleDirection} from '../vehicles.mjs';
 import {vehicleTrip,vehicleTripQuery} from '../vehicle-trip.mjs';
 import {trackingId} from '../trip-reports.mjs';
 import {busTripSegments} from '../bus-trip-shapes.mjs';
@@ -61,6 +61,25 @@ test('viewport, modes, and SBS-aware route filters narrow actual vehicle reports
  const s=store();assert.equal(vehicleSnapshot(s,{now,modes:['bus'],lines:['M34-SBS']}).vehicles.length,1);
  assert.equal(vehicleSnapshot(s,{now,modes:['bus'],lines:['M34']}).vehicles.length,0);
  assert.equal(vehicleSnapshot(s,{now,bounds:[-74.1,40.8,-73.9,40.9]}).vehicles.length,0);
+});
+test('a selected bus route returns published paths and stops beyond the viewport',async()=>{
+ const s=store();let calls=0;
+ s.fetcher=async url=>{
+  calls++;
+  assert.match(decodeURIComponent(url.pathname),/MTA NYCT_M34\+\.json$/);
+  assert.equal(url.searchParams.get('includePolylines'),'true');
+  const points='_p~iF~ps|U_ulLnnqC_mqNvxq`@';
+  return Response.json({data:{entry:{stopGroupings:[{stopGroups:[{id:0,polylines:[{points}]}]}]},references:{stops:[{id:'MTA_123',name:'TEST AV/MAIN ST',lat:40.75,lon:-73.99}]}}});
+ };
+ const query=vehicleQuery(new URLSearchParams('modes=bus&lines=M34-SBS&network=1&bbox=-74.1,40.8,-73.9,40.9'));
+ const result=await vehicleResponse(s,{...query,now});
+ assert.deepEqual(result.vehicles,[]);
+ assert.deepEqual(result.availableLines,['M34-SBS']);
+ assert.equal(result.network.segments[0].line,'M34-SBS');
+ assert.deepEqual(result.network.stations,[{id:'MTA_123',name:'Test Av / Main St',coordinate:{latitude:40.75,longitude:-73.99}}]);
+ await vehicleResponse(s,{...query,now});
+ assert.equal(calls,1);
+ assert.equal((await vehicleResponse(s,{...query,lines:[],now})).network,undefined);
 });
 test('invalid viewport and route inputs fail before accessing providers',()=>{
  for(const query of ['bbox=bad','bbox=-74,41,-75,40','bbox=-74,40,500,41','modes=spaceship','lines=%3Cscript%3E'])assert.throws(()=>vehicleQuery(new URLSearchParams(query)));

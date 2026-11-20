@@ -41,6 +41,13 @@ struct BikeBoard: View {
                 .onMapCameraChange(frequency: .onEnd) { viewport = $0.region }
                 .frame(minHeight: 230, maxHeight: .infinity)
                 .accessibilityLabel("Citi Bike station map")
+                .overlay(alignment: .topLeading) {
+                    Link(destination: URL(string: "https://bkn.lft.to/lastmile_qr_scan")!) {
+                        Label("Scan a Citi Bike", systemImage: "qrcode.viewfinder")
+                            .font(.subheadline.weight(.semibold)).padding(.horizontal, 10).frame(minHeight: 44)
+                            .background(.regularMaterial, in: .rect(cornerRadius: 10))
+                    }.padding(9)
+                }
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text(selected?.name ?? "Citi Bike docks").font(.headline).lineLimit(1)

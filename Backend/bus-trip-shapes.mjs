@@ -1,4 +1,4 @@
-import {busStopID} from './feeds.mjs';
+import {busStopID,busStopName} from './feeds.mjs';
 import {createTripGeometry} from './subway-shapes.mjs';
 
 const byStore=new WeakMap();
@@ -65,6 +65,23 @@ export async function loadBusRoute(store,routeId,vehicle){
   if(cache.size>=160)cache.delete(cache.keys().next().value);
   cache.set(key,item);
   return item.result;
+}
+
+export async function busLineStops(store,line){
+  const data=await loadBusRoute(store,line);
+  return data?[...data.stops.values()].map(stop=>({gtfsId:stop.id,name:busStopName(stop.name),lat:stop.lat,lon:stop.lon})):null;
+}
+
+export async function busLineNetwork(store,line){
+  const data=await loadBusRoute(store,line);
+  if(!data)return {segments:[],stations:[],unmatchedSegments:0};
+  const directional=data.groups.flatMap(group=>group.points);
+  const paths=directional.length?directional:data.points;
+  return {
+    segments:paths.map(points=>({line,color:'2262AA',points})),
+    stations:[...data.stops.values()].map(stop=>({id:stop.id,name:busStopName(stop.name),coordinate:{latitude:stop.lat,longitude:stop.lon}})),
+    unmatchedSegments:0
+  };
 }
 
 export function busTripSegments(data,directionId,predictions,gps){
