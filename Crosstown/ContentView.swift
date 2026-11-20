@@ -27,11 +27,13 @@ struct ContentView: View {
                     && route.legs.allSatisfy { $0.mode != .bike })
             }.map(model.resolvedRoute)
         }
-        return (response.routeGroups?[comparisonMode] ?? response.routes.filter { route in
-            if comparisonMode == "walk" { return route.legs.allSatisfy { $0.mode == .walk } }
-            return route.legs.contains { $0.mode.rawValue == comparisonMode }
-                && (comparisonMode == "bike" || route.legs.allSatisfy { $0.mode.rawValue == comparisonMode || $0.mode == .walk })
-        }).map(model.resolvedRoute)
+        return (response.routeGroups?[comparisonMode] ?? response.routes.filter(matchesTravelMode)).map(model.resolvedRoute)
+    }
+    private func matchesTravelMode(_ route: Itinerary) -> Bool {
+        if comparisonMode == "all" { return true }
+        if comparisonMode == "walk" { return route.legs.allSatisfy { $0.mode == .walk } }
+        return route.legs.contains { $0.mode.rawValue == comparisonMode }
+            && (comparisonMode == "bike" || route.legs.allSatisfy { $0.mode.rawValue == comparisonMode || $0.mode == .walk })
     }
     private var walkingComparison: String? {
         guard comparisonMode == "all", !prefersShelteredTransit, let groups = model.response?.routeGroups,
@@ -190,7 +192,23 @@ struct ContentView: View {
                     }.contentMargins(.trailing, 2)
                 }
 
-                if model.loading && model.response == nil { ProgressView("Finding combinations…").frame(maxWidth: .infinity).padding() }
+                if model.loading && model.response == nil {
+                    if let route = model.earlyRoute, matchesTravelMode(route) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ProgressView("Comparing more routes…").font(.subheadline)
+                            Button { selectedRoute = route } label: {
+                                HStack {
+                                    Label(route.title, systemImage: "arrow.triangle.turn.up.right.diamond")
+                                    Spacer()
+                                    Text("\(Int(ceil(route.minutes))) min").monospacedDigit()
+                                    Image(systemName: "chevron.right")
+                                }.padding(12).frame(minHeight: 44).background(.white, in: .rect(cornerRadius: 14))
+                            }.buttonStyle(.plain).accessibilityHint("Open the first available route")
+                        }
+                    } else {
+                        ProgressView("Checking service times and streets…").frame(maxWidth: .infinity).padding()
+                    }
+                }
                 if let error = model.error { ContentUnavailableView("Let’s try again", systemImage: "arrow.clockwise", description: Text(error)) }
                 if model.response != nil {
                     HStack {

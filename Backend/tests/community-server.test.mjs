@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {createCommunityAPI} from '../community-server.mjs';
-import {transitousItinerary} from '../transitous.mjs';
+import {createTransitousSearch,transitousItinerary} from '../transitous.mjs';
+import {defaults} from '../otp.mjs';
 
 const lookup={index:{stops:{},routes:{}},stationStructures:[],busStops:[]};
 const request=(path,options)=>new Request('https://example.test'+path,options);
@@ -45,4 +46,54 @@ test('Subway loading shares feed checks and skips Bus Time and Citi Bike',async(
   assert.equal(stops.status,200);
   assert.equal(requested.length,8);
   assert(requested.every(url=>url.includes('api-endpoint.mta.info')));
+});
+
+test('the hosted plan can show a real routing result while it checks other modes',async()=>{
+  const origin={id:'a',name:'A',coordinate:{latitude:40.75,longitude:-73.98}};
+  const destination={id:'b',name:'B',coordinate:{latitude:40.751,longitude:-73.98}};
+  const from={name:'A',lat:40.75,lon:-73.98},to={...from,name:'B',lat:40.751};
+  const walking={legs:[{mode:'WALK',from,to,duration:120,legGeometry:{points:'_p~iF~ps|U_ulLnnqC',precision:5}}]};
+  const bus=Promise.withResolvers();
+  const handle=createCommunityAPI({lookup,restaurants:{restaurants:[]},fetcher:async url=>{
+    if(url.searchParams.get('transitModes')==='BUS'){
+      await bus.promise;
+      return Response.json({itineraries:[]});
+    }
+    return Response.json({direct:[walking]});
+  }});
+  const body=JSON.stringify({origin,destination,preferences:{modes:['walk','bus'],requireLiveTransit:false}});
+  const response=await handle(request('/api/plan',{method:'POST',body,headers:{Accept:'application/x-ndjson'}}));
+  assert.equal(response.headers.get('content-type'),'application/x-ndjson');
+  const reader=response.body.pipeThrough(new TextDecoderStream()).getReader();
+  try{
+    const first=JSON.parse((await reader.read()).value);
+    assert.equal(first.type,'preview');
+    assert.equal(first.route.minutes,2);
+    assert.equal(first.route.legs[0].mode,'walk');
+  }finally{bus.resolve();}
+  const complete=JSON.parse((await reader.read()).value);
+  assert.equal(complete.type,'result');
+  assert.equal(complete.plan.routes[0].minutes,2);
+  assert.equal((await reader.read()).done,true);
+  const json=await handle(request('/api/plan',{method:'POST',body}));
+  assert.equal((await json.json()).routes[0].minutes,2);
+});
+
+test('street routes share topology across arrival times and skip impossible walks',async()=>{
+  const cache=new Map();
+  let calls=0;
+  const fetcher=async()=>{calls++;return Response.json({direct:[]});};
+  const walk={directOnly:true,direct:['WALK']},place=(latitude,longitude)=>({location:{coordinate:{latitude,longitude}}});
+  const origin=place(40.75,-73.98),destination=place(40.755,-73.98);
+  const now=Date.now(),preferences=defaults();
+  const immediate=createTransitousSearch({},{cache,fetcher});
+  const later=createTransitousSearch({},{cache,fetcher,leaveNow:false});
+  await immediate.search(origin,destination,walk,preferences,now);
+  await later.search(origin,destination,walk,preferences,now+3600000,true);
+  assert.equal(calls,1);
+  await later.search(origin,destination,walk,{...preferences,walkingPace:'relaxed'},now+3600000,true);
+  assert.equal(calls,2);
+  const tooFar=await immediate.search(origin,place(40.81,-73.98),walk,preferences,now);
+  assert.deepEqual(tooFar,[]);
+  assert.equal(calls,2);
 });

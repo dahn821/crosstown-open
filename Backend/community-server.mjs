@@ -13,7 +13,30 @@ import {setTimeout as wait} from 'node:timers/promises';
 
 const meters=(a,b)=>Math.hypot((a.latitude-b.latitude)*111200,(a.longitude-b.longitude)*84200);
 const withinNYC=point=>Number.isFinite(point.latitude)&&Number.isFinite(point.longitude)&&point.latitude>=40.48&&point.latitude<=40.94&&point.longitude>=-74.27&&point.longitude<=-73.67;
-const json=(value,status=200)=>Response.json(value,{status,headers:{'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','X-Robots-Tag':'noindex, noarchive'}});
+const privateHeaders={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','X-Robots-Tag':'noindex, noarchive'};
+const json=(value,status=200)=>Response.json(value,{status,headers:privateHeaders});
+const planStreamType='application/x-ndjson';
+const planError=error=>error.message||'The route service is unavailable.';
+
+function streamPlan(request,run){
+ const canceled=new AbortController(),signal=AbortSignal.any([request.signal,canceled.signal]);
+ const encoder=new TextEncoder();
+ const body=new ReadableStream({
+   async start(controller){
+     let open=true;
+     const send=event=>{
+       if(open&&!canceled.signal.aborted)controller.enqueue(encoder.encode(JSON.stringify(event)+'\n'));
+     };
+     try{
+       const plan=await run(signal,route=>send({type:'preview',route}));
+       send({type:'result',plan});
+     }catch(error){send({type:'error',error:planError(error)});}
+     finally{open=false;if(!canceled.signal.aborted)controller.close();}
+   },
+   cancel(){canceled.abort();}
+ });
+ return new Response(body,{headers:{...privateHeaders,'Content-Type':planStreamType}});
+}
 
 export function createCommunityAPI({lookup,restaurants,busKey='',subwayShapeData,beforeRequest=async()=>{},fetcher=fetch,contact='https://github.com/dahn821/crosstown-open'}={}){
  configureRoutingData({stations:lookup.stationStructures,index:lookup.index});
@@ -34,10 +57,12 @@ export function createCommunityAPI({lookup,restaurants,busKey='',subwayShapeData
    const job=requestQueue.then(async()=>{
      signal?.throwIfAborted();
      if(Date.now()<pausedUntil)throw busy();
+     // Charge the request while the spacing interval is still running.
+     await beforeRequest(signal);
      const gap=lastRequestAt+500-Date.now();
      if(gap>0)await wait(gap,undefined,{signal});
+     signal?.throwIfAborted();
      if(Date.now()<pausedUntil)throw busy();
-     await beforeRequest(signal);
      lastRequestAt=Date.now();
    });
    requestQueue=job.catch(()=>{});
@@ -79,25 +104,29 @@ export function createCommunityAPI({lookup,restaurants,busKey='',subwayShapeData
      return json({service:'Crosstown',version:'0.3.0',router:{ready:true,message:'Community street routing with current MTA and Citi Bike checks.',engine:'MOTIS 2 / Transitous',mode:'community'},feeds:store.status(),coverage:'New York City, five boroughs',localSetupAvailable:false,community:{requestLimit:600,windowHours:24,source:'https://transitous.org/sources/'}});
    }
    if(pathname==='/api/plan'&&request.method==='POST'){
-     if(activePlans>=2)return json({error:'Several routes are being checked. Please try again shortly.'},429);
      const text=await request.text();if(text.length>20000)return json({error:'Request too large.'},413);
      let input;try{input=JSON.parse(text);}catch{return json({error:'Invalid route request.'},400);}
      const {preferences}=validateRequest(input);
-     activePlans++;
-     try{
-       const deadline=AbortSignal.any([request.signal,AbortSignal.timeout(22000)]);
-       const feedsReady=feeds([
-         ...(preferences.modes.includes('subway')?subwayFeeds:[]),
-         ...(preferences.modes.includes('bus')?['bus']:[]),
-         ...(preferences.modes.includes('bike')&&preferences.bikeSource==='citiBike'?['bikes']:[])
-       ],6000);
-       const adapter=createTransitousSearch(store,{fetcher,cache,contact,leaveNow:!input.departureTime&&!input.arrivalTime,beforeRequest:reserveProviderRequest,onRateLimit:pauseProvider,deadline});
-       const result=await route(input,store,{searcher:adapter.search,feedsReady,bikeCandidateLimit:1,rentalTransitFamilies:false,egressBikeConnections:true,lowAssistPickupLimit:2});
-       result.router={engine:'MOTIS 2 / Transitous',mode:'community'};
-       result.searchBounds={...result.searchBounds,windowMinutes:15,extraBikeConnections:2,bikeDockPairsPerAccess:1};
-       result.notice='Routes use Transitous street and schedule data, checked against current MTA predictions and Citi Bike reports. Times are estimates and availability can change.';
-       return json(result);
-     }finally{activePlans--;}
+     if(activePlans>=2)return json({error:'Several routes are being checked. Please try again shortly.'},429);
+     const run=async(signal,onPreview)=>{
+       activePlans++;
+       try{
+         const deadline=AbortSignal.any([signal,AbortSignal.timeout(22000)]);
+         const feedsReady={
+           subway:preferences.modes.includes('subway')?feeds(subwayFeeds,6000):undefined,
+           bus:preferences.modes.includes('bus')&&busKey&&preferences.bikeSource!=='ownBike'?feeds(['bus'],6000):undefined,
+           bike:preferences.modes.includes('bike')&&preferences.maxBikingMinutes>0&&preferences.bikeSource==='citiBike'?feeds(['bikes'],6000):undefined
+         };
+         const adapter=createTransitousSearch(store,{fetcher,cache,contact,leaveNow:!input.departureTime&&!input.arrivalTime,beforeRequest:reserveProviderRequest,onRateLimit:pauseProvider,deadline});
+         const result=await route(input,store,{searcher:adapter.search,feedsReady,onPreview,bikeCandidateLimit:1,rentalTransitFamilies:false,egressBikeConnections:true,lowAssistPickupLimit:2});
+         result.router={engine:'MOTIS 2 / Transitous',mode:'community'};
+         result.searchBounds={...result.searchBounds,windowMinutes:15,extraBikeConnections:2,bikeDockPairsPerAccess:1};
+         result.notice='Routes use Transitous street and schedule data, checked against current MTA predictions and Citi Bike reports. Times are estimates and availability can change.';
+         return result;
+       }finally{activePlans--;}
+     };
+     if(request.headers.get('accept')?.split(',').some(type=>type.trim()===planStreamType))return streamPlan(request,run);
+     return json(await run(request.signal));
    }
    if(pathname==='/api/bike-stations'&&request.method==='GET'){
      await feeds(['bikes']);
@@ -133,6 +162,6 @@ export function createCommunityAPI({lookup,restaurants,busKey='',subwayShapeData
      return json({departures:store.departures(stops,Date.now(),{mode:url.searchParams.get('mode'),stop:url.searchParams.get('stop')}),feedStatus:store.status(),generatedAt:new Date().toISOString(),radiusMeters:1200});
    }
    return json({error:'Not found.'},404);
-  }catch(error){const status=error.status||(/community routing limit/i.test(error.message)?429:502);return json({error:error.message||'The route service is unavailable.'},status);}
+  }catch(error){const status=error.status||(/community routing limit/i.test(error.message)?429:502);return json({error:planError(error)},status);}
  };
 }

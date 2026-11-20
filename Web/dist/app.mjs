@@ -10,9 +10,10 @@ import {CURRENT_LOCATION_ID,createCurrentLocationLookup} from './current-locatio
 import {deviceLocation} from './location-startup.mjs';
 import {departureOptions,resolveDeparture,canChooseDeparture} from './transit-choices.mjs';
 import {createLiveNavigation} from './live-navigation.mjs';
+import {searchRoutes} from './route-search.mjs';
 const $=(s,root=document)=>root.querySelector(s),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const mins=n=>Math.ceil(n),money=c=>c===0?'Included':new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(c/100),clock=s=>s?new Date(s).toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'numeric',minute:'2-digit'}):'—';
-const state={origin:null,destination:null,location:{status:'idle'},preferences:defaults(),response:null,selected:0,loading:false,error:null,health:null,places:[],landmarks:[],saved:[],favoritePlaces:[],modal:null,journey:null,timing:{mode:'now',time:null},travelMode:'all',mainView:'directions'};
+const state={origin:null,destination:null,location:{status:'idle'},preferences:defaults(),response:null,earlyRoute:null,selected:0,loading:false,error:null,health:null,places:[],landmarks:[],saved:[],favoritePlaces:[],modal:null,journey:null,timing:{mode:'now',time:null},travelMode:'all',mainView:'directions'};
 const sheet=$('#sheet'),app=$('#app'),preview=$('#journey-preview'),navigationPanel=$('#navigation-controls');
 let searchId=0,searchTimer,placeAbort,toastTimer,map,layers,abort,vehicleMap,vehicleTracking,liveExplore,mobileLayout,navigationMarkers;
 const departureSelections={};let departureRequestKey="";
@@ -36,7 +37,7 @@ async function api(url,options={}){const r=await fetch('/api'+url,{...options,he
 function toast(s){clearTimeout(toastTimer);$('#toast').textContent=s;$('#toast').classList.add('visible');toastTimer=setTimeout(()=>$('#toast').classList.remove('visible'),3000);}
 function hydrate(root=document){for(const n of root.querySelectorAll('[data-icon]'))n.innerHTML=icon(n.dataset.icon);}
 function updateFields(){$('#origin-label').textContent=state.location.status==='loading'&&!state.origin?'Finding your location…':state.origin?.name||'Current location';$('#destination-label').textContent=state.destination?.name||'Choose a destination';$('#departure-label').textContent=timingLabel(state.timing);$('[data-action="swap"]').disabled=!state.origin||!state.destination;for(const b of document.querySelectorAll('[data-priority]')){const active=b.dataset.priority===state.preferences.priority;b.classList.toggle('active',active);b.setAttribute('aria-pressed',active);}$('#custom-note').hidden=state.preferences.priority!=='custom';}
-function clearTrip(){searchId++;abort?.abort();state.loading=false;state.response=null;state.error=null;$('[data-action="refresh"]').disabled=false;}
+function clearTrip(){searchId++;abort?.abort();state.loading=false;state.response=null;state.earlyRoute=null;state.error=null;$('[data-action="refresh"]').disabled=false;}
 const currentLocation=createCurrentLocationLookup({source:deviceLocation,onUpdate:(update,options)=>{
  state.location=update;
  if(update.place){const first=!state.origin;state.origin=update.place;renderRoutes();drawRoute(first);planTrip(options);}
@@ -44,30 +45,52 @@ const currentLocation=createCurrentLocationLookup({source:deviceLocation,onUpdat
 }});
 function useCurrentLocation(){closeJourney({focus:false});currentLocation.cancel();state.origin=null;state.travelMode='all';clearTrip();if(state.modal?.type==='place'){cancelPlaceSearch();sheet.close();state.modal=null;}currentLocation.request();}
 function refreshTrip(options={}){if(state.origin?.id===CURRENT_LOCATION_ID||!state.origin)return currentLocation.request(options);return planTrip(options);}
+function matchesTravelMode(route,mode){
+ if(mode==='all')return true;
+ if(mode==='walk')return route.legs.every(leg=>leg.mode==='walk');
+ return route.legs.some(leg=>leg.mode===mode)&&(mode==='bike'||route.legs.every(leg=>leg.mode===mode||leg.mode==='walk'));
+}
 function currentRoutes(){
  const mode=state.travelMode,all=state.response?.routes||[];
  let routes=all;
  if(mode==='all'){
   if(state.preferences.priority==='sheltered')routes=all.filter(route=>route.legs.some(leg=>leg.mode==='subway'||leg.mode==='bus')&&route.legs.every(leg=>leg.mode!=='bike'));
  }else{
-  routes=state.response?.routeGroups?.[mode]??all.filter(route=>{
-   if(mode==='walk')return route.legs.every(leg=>leg.mode==='walk');
-   return route.legs.some(leg=>leg.mode===mode)&&(mode==='bike'||route.legs.every(leg=>leg.mode===mode||leg.mode==='walk'));
-  });
+  routes=state.response?.routeGroups?.[mode]??all.filter(route=>matchesTravelMode(route,mode));
  }
  return routes.map(route=>resolveDeparture(route,state.response,departureSelections));
 }
 async function planTrip({quiet=false}={}){
  if(!quiet&&state.journey)closeJourney({focus:false});
- if(!state.origin||!state.destination)return;const key=JSON.stringify([state.origin.id,state.destination.id,state.preferences,state.timing]);if(key!==departureRequestKey){for(const id of Object.keys(departureSelections))delete departureSelections[id];departureRequestKey=key;}const id=++searchId;abort?.abort();abort=new AbortController();state.loading=true;state.error=null;
+ if(!state.origin||!state.destination)return;const key=JSON.stringify([state.origin.id,state.destination.id,state.preferences,state.timing]);if(key!==departureRequestKey){for(const id of Object.keys(departureSelections))delete departureSelections[id];departureRequestKey=key;}const id=++searchId;abort?.abort();abort=new AbortController();state.loading=true;state.error=null;state.earlyRoute=null;
  if(!quiet){state.response=null;state.selected=0;renderRoutes();drawRoute();}$('[data-action="refresh"]').disabled=true;
- try{const request={origin:state.origin,destination:state.destination,preferences:state.preferences,...timingPayload(state.timing)};const r=await api('/plan',{method:'POST',body:JSON.stringify(request),signal:abort.signal});if(id!==searchId)return;const previous=currentRoutes()[state.selected]?.id;state.response=r;for(const key of Object.keys(departureSelections))if(!r.alternativeRoutes?.[departureSelections[key]])delete departureSelections[key];state.health={...state.health,router:r.router??state.health?.router,feeds:r.feedStatus};state.selected=Math.max(0,currentRoutes().findIndex(x=>x.id===previous));}
+ try{
+  const request={origin:state.origin,destination:state.destination,preferences:state.preferences,...timingPayload(state.timing)};
+  const r=await searchRoutes(request,{signal:abort.signal,onPreview:quiet?undefined:route=>{
+   if(id!==searchId)return;
+   state.earlyRoute=route;
+   renderRoutes();
+  }});
+  if(id!==searchId)return;
+  const previous=currentRoutes()[state.selected]?.id;
+  state.response=r;
+  for(const key of Object.keys(departureSelections))if(!r.alternativeRoutes?.[departureSelections[key]])delete departureSelections[key];
+  state.health={...state.health,router:r.router??state.health?.router,feeds:r.feedStatus};
+  state.selected=Math.max(0,currentRoutes().findIndex(x=>x.id===previous));
+ }
  catch(e){if(id!==searchId||e.name==='AbortError')return;state.error=e.message;state.response=null;}
- if(id!==searchId)return;state.loading=false;$('[data-action="refresh"]').disabled=false;renderRoutes();drawRoute(!quiet);updateFreshness();
+ if(id!==searchId)return;state.loading=false;state.earlyRoute=null;$('[data-action="refresh"]').disabled=false;renderRoutes();drawRoute(!quiet&&!state.journey);updateFreshness();
 }
 function renderRoutes(){
  updateFields();const list=$('#route-list');for(const b of document.querySelectorAll('[data-travel-mode]')){const active=b.dataset.travelMode===state.travelMode;b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active));}
  const mode=state.travelMode,sheltered=mode==='all'&&state.preferences.priority==='sheltered';
+ const first=state.loading&&!state.response&&state.earlyRoute&&matchesTravelMode(state.earlyRoute,mode)?state.earlyRoute:null;
+ const shortcut=$('.early-route-shortcut');
+ shortcut.hidden=!first;
+ if(first){
+  shortcut.textContent=`View · ${mins(first.minutes)} min`;
+  shortcut.setAttribute('aria-label',`Open first route, ${routeTitle(first)}, ${mins(first.minutes)} minutes`);
+ }
  const description={subway:'Trips where the subway accounts for most of the ride time.',bus:'Trips where buses account for most of the ride time.',walk:'Walking routes within your walking limit.',bike:'Routes that include a bike ride.'};
  const context=$('#mode-context');
  const fastest=group=>Math.min(...(state.response?.routeGroups?.[group]||[]).map(route=>route.minutes));
@@ -76,7 +99,16 @@ function renderRoutes(){
  context.textContent=state.response?.partialSearch?'Some route searches could not finish. Refresh to compare all options.':sheltered?'Subway and bus trips ranked by estimated time outside.':description[mode]||comparison;
  context.hidden=!context.textContent;
  if(!state.origin||!state.destination){const locating=state.location.status==='loading';$('#results-subtitle').textContent=locating?'Finding your current location':!state.origin?'Choose a start to find routes':'Choose a destination';list.innerHTML=`<div class="empty">${icon('locate')}<h3>${locating?'Finding your location…':!state.origin?'Start where you are.':'Where to?'}</h3><p>${esc(state.location.message||(locating?'Allow location access to find routes from where you are.':'Use your current location or choose a starting address.'))}</p>${!locating?'<button class="primary" data-action="current-location">Use current location</button>':''}<button class="text-button" data-place="${state.origin?'destination':'origin'}">Choose ${state.origin?'a destination':'a start'}</button></div>`;return;}
- if(state.loading&&!state.response){$('#results-subtitle').textContent='Checking connections…';list.innerHTML='<div class="loading"><i></i><strong>Looking beyond the nearest station</strong><span>Checking service times, bike docks and streets.</span></div>';return;}
+ if(state.loading&&!state.response){
+  if(first){
+   $('#results-subtitle').textContent='Comparing more routes…';
+   list.innerHTML=`<button class="route" data-action="early-route" aria-label="Open first route, ${esc(routeTitle(first))}, ${mins(first.minutes)} minutes"><div class="route-label"><span>FIRST OPTION</span></div><div class="route-main"><div><div class="route-title">${esc(routeTitle(first))}</div><p class="route-subtitle">Arrive ${clock(first.arrivalTime)}</p></div><div class="duration"><b>${mins(first.minutes)}</b><small>min</small></div></div></button>`;
+  }else{
+   $('#results-subtitle').textContent='Checking connections…';
+   list.innerHTML='<div class="loading"><i></i><strong>Checking service times and streets</strong></div>';
+  }
+  return;
+ }
  if(state.error){$('#results-subtitle').textContent='Connection needed';list.innerHTML=`<div class="empty">${icon('activity')}<h3>We couldn’t check this trip.</h3><p>${esc(state.error)}</p><button class="primary" data-action="refresh">Try again ${icon('refresh')}</button><p class="hint">Run the included Crosstown launcher if you’re using the app locally.</p></div>`;return;}
  const routes=currentRoutes();$('#results-subtitle').textContent=routes.length?`${routes.length} routes · best match ${mins(routes[0].minutes)} min · ${labels[state.preferences.priority].toLowerCase()}`:'No connections within your limits';
  if(!routes.length){context.hidden=false;context.textContent=mode!=='all'&&!state.preferences.modes.includes(mode)?`${mode==='bike'?'Biking':mode==='subway'?'Subway':mode==='bus'?'Buses':'Walking'} is turned off. Enable it in Make it mine.`:mode==='bus'&&state.preferences.bikeSource==='ownBike'?'Your own bike cannot board a bus. Choose Citi Bike to compare bus connections.':mode==='bus'&&state.preferences.requireLiveTransit&&!state.health?.feeds?.bus?.configured?'Live buses need a Bus Time connection. Connect it in Sources, or explicitly allow schedules.':sheltered?'No subway or bus trip fits these limits.':`No eligible ${mode==='all'?'':mode+' '}route was found within your limits${state.preferences.requireLiveTransit?' and current live reports':''}. Walking limit: ${state.preferences.maxWalkingMinutes} min. Biking limit: ${state.preferences.maxBikingMinutes} min.`;list.innerHTML=`<div class="empty">${icon('sliders')}<h3>A little more room?</h3><p>${sheltered?'Allow a longer walk or check which transit modes and schedules you use.':'No reachable route fits these limits. Try more walking or biking time, another mode, or allow scheduled transit when live predictions are missing.'}</p><button class="primary" data-action="preferences">Adjust my limits</button></div>`;return;}
@@ -569,6 +601,7 @@ document.addEventListener('click',event=>{
  if(b.dataset.saved!=null){setMainView('directions');currentLocation.cancel();state.location={status:'idle'};const s=state.saved[Number(b.dataset.saved)];state.origin=s.origin;state.destination=s.destination;state.preferences={...defaults(),...s.preferences,...bikePaces(state.preferences)};state.travelMode='all';state.timing={mode:'now',time:null};sheet.close();state.modal=null;if(state.origin.id===CURRENT_LOCATION_ID)useCurrentLocation();else planTrip();return;}
  if(b.dataset.removeSaved!=null){state.saved.splice(Number(b.dataset.removeSaved),1);try{localStorage.setItem('crosstown.saved.v2',JSON.stringify(state.saved));savedTrips();}catch{toast('Couldn’t update saved trips.');}return;}
  switch(b.dataset.action){
+  case'early-route':detail(state.earlyRoute,{focus:true,expand:true});break;
   case'journey-back':closeJourney();break;
   case'journey-size':mobileLayout.resizeJourney();break;
   case'navigate':startNavigation();break;

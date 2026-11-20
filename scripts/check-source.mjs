@@ -9,6 +9,7 @@ const required = [
   'netlify/functions/api.mjs',
   'Web/dist/index.html',
   'Web/dist/app.mjs',
+  'Web/dist/route-search.mjs',
   'Web/dist/journey.css',
   'Web/dist/journey-navigation.mjs',
   'Web/dist/live-navigation.mjs',

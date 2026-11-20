@@ -63,13 +63,14 @@ export async function lowAssistTrip(raw,request,store,{search,distance,geometry,
 
   const {origin,depart,arriveBy}=request,drop=reference.drop;
   const instant=arriveBy??depart,asPoint=station=>searchPoint(station.name,station.coordinate);
+  const pickupPreferences={...p,maxWalkingMinutes:Math.min(p.maxWalkingMinutes,maxPickupWalkSeconds/60)};
   const candidates=stations.filter(station=>station.id!==drop.id&&lowAssistPickup(station))
     .map(station=>({station,distance:distance(origin.coordinate,station.coordinate)}))
     .filter(candidate=>candidate.distance<maxPickupWalkSeconds*walkingSpeed(p))
     .sort((a,b)=>a.distance-b.distance).slice(0,pickupLimit);
   const accesses=await Promise.allSettled(candidates.map(async({station,distance})=>{
     if(distance<3)return {station,legs:[],seconds:0};
-    const [access]=await search(searchPoint(origin.name,origin.coordinate),asPoint(station),street('WALK'),p,instant,arriveBy!=null);
+    const [access]=await search(searchPoint(origin.name,origin.coordinate),asPoint(station),street('WALK'),pickupPreferences,instant,arriveBy!=null);
     return access?.legs.every(leg=>leg.mode==='WALK')?{station,legs:access.legs,seconds:seconds(access.legs)}:null;
   }));
   const access=accesses.flatMap(result=>result.status==='fulfilled'&&result.value&&result.value.seconds<maxPickupWalkSeconds?[result.value]:[])

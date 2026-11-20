@@ -25,3 +25,5 @@
 .place-bookmark .icon { width:18px; height:18px; }
 .saved-section-title { margin:13px 0 2px; font-size:13px; font-weight:700; }
 .add-favorite { min-height:44px; }
+
+.early-route-shortcut { display:none; }

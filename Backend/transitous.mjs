@@ -44,12 +44,23 @@ export function createTransitousSearch(store,{fetcher=fetch,cache=new Map(),befo
   };
   async function plain(origin,destination,modes,preferences,instant,arriveBy=false,cyclingSpeed=classicCyclingSpeed){
     const from=point(origin),to=point(destination),transit=modes.transit?.transit?.map(item=>item.mode)||[],asMode=mode=>mode==='BICYCLE'?'BIKE':mode;
-    if(meters(from,to)<3)return [{legs:[]}];
+    const straightLine=meters(from,to);
+    if(straightLine<3)return [{legs:[]}];
+    const walkOnly=modes.directOnly&&modes.direct.length===1&&modes.direct[0]==='WALK';
+    // A street path cannot beat the straight-line distance. Allow room for
+    // map snapping and the approximate distance calculation.
+    if(walkOnly&&(!preferences.modes.includes('walk')||preferences.maxWalkingMinutes===0||
+      straightLine>walkingSpeed(preferences)*preferences.maxWalkingMinutes*60+200))return [];
     const hasPersonalPace=preferences.bikeSource==='citiBike'&&(preferences.classicBikePaceMph!=null||preferences.lowAssistBikePaceMph!=null);
     const bikeLimit=hasPersonalPace?Math.max(preferences.maxBikingMinutes,Math.min(120,preferences.maxBikingMinutes*2)):preferences.maxBikingMinutes;
     const parameters={fromPlace:`${from.latitude},${from.longitude}`,toPlace:`${to.latitude},${to.longitude}`,time:new Date(instant).toISOString(),arriveBy:String(arriveBy),pedestrianSpeed:String(walkingSpeed(preferences)),cyclingSpeed:String(cyclingSpeed),transitModes:transit.join(','),directModes:modes.directOnly?modes.direct.map(asMode).join(','):'',preTransitModes:(modes.transit?.access||['WALK']).map(asMode).join(','),postTransitModes:(modes.transit?.egress||['WALK']).map(asMode).join(','),maxTransfers:String(preferences.maxTransfers),minTransferTime:'45',additionalTransferTime:'90',maxPreTransitTime:String(Math.min(900,(modes.transit?.access?.includes('BICYCLE')?preferences.maxBikingMinutes:preferences.maxWalkingMinutes)*60)),maxPostTransitTime:String(Math.min(900,(modes.transit?.egress?.includes('BICYCLE')?preferences.maxBikingMinutes:preferences.maxWalkingMinutes)*60)),maxDirectTime:String((modes.direct?.includes('BICYCLE')?bikeLimit:preferences.maxWalkingMinutes)*60),numItineraries:'10',maxItineraries:'10',searchWindow:'900',numLegAlternatives:'0'};
     if(transit.length&&preferences.bikeSource==='ownBike'&&modes.transit.access.includes('BICYCLE'))parameters.requireBikeTransport='true';
-    const cacheParameters={...parameters,time:leaveNow?'current-topology':parameters.time},key=crypto.createHash('sha256').update(JSON.stringify(cacheParameters)).digest('hex'),cached=await cache.get(key);
+    const streetOnly=modes.directOnly&&transit.length===0;
+    const cacheParameters=streetOnly?{fromPlace:parameters.fromPlace,toPlace:parameters.toPlace,
+      directModes:parameters.directModes,pedestrianSpeed:parameters.pedestrianSpeed,
+      cyclingSpeed:walkOnly?undefined:parameters.cyclingSpeed,maxDirectTime:parameters.maxDirectTime}:
+      {...parameters,time:leaveNow?'current-topology':parameters.time};
+    const key=crypto.createHash('sha256').update(JSON.stringify(cacheParameters)).digest('hex'),cached=await cache.get(key);
     if(cached&&cached.until>now()){metrics.cacheHits++;return cached.routes;}
     if(pending.has(key))return pending.get(key);
     const task=(async()=>{
@@ -70,7 +81,7 @@ export function createTransitousSearch(store,{fetcher=fetch,cache=new Map(),befo
       if(!Array.isArray(list))throw Error('The community router returned an invalid result.');
       const routes=list.map(transitousItinerary).filter(Boolean);
       if(cache.size>=150)cache.delete(cache.keys().next().value);
-      await cache.set(key,{routes,until:now()+(leaveNow&&preferences.requireLiveTransit?900000:60000)});return routes;
+      await cache.set(key,{routes,until:now()+(streetOnly||leaveNow&&preferences.requireLiveTransit?900000:60000)});return routes;
     })().finally(()=>pending.delete(key));pending.set(key,task);return task;
   }
   async function rental(origin,destination,preferences,instant){

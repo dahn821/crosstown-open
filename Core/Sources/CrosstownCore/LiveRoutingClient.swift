@@ -63,32 +63,84 @@ public actor LiveRoutingClient {
         if let line { components.queryItems?.append(URLQueryItem(name: "line", value: line)) }
         return try await fetch(URLRequest(url: components.url!), as: TransitDepartures.self)
     }
-    public func plan(origin: Place, destination: Place, preferences: RoutePreferences, departureOffsetMinutes: Double = 0, departureTime: Date? = nil, arrivalTime: Date? = nil) async throws -> PlanResponse {
+    public func plan(origin: Place, destination: Place, preferences: RoutePreferences, departureOffsetMinutes: Double = 0, departureTime: Date? = nil, arrivalTime: Date? = nil, onPreview: (@MainActor @Sendable (Itinerary) -> Void)? = nil) async throws -> PlanResponse {
         struct Request: Encodable { var origin: Place; var destination: Place; var preferences: RoutePreferences; var departureTime: String?; var arrivalTime: String? }
         let departure = departureTime?.ISO8601Format() ?? (departureOffsetMinutes == 0 ? nil : Date().addingTimeInterval(departureOffsetMinutes * 60).ISO8601Format())
         var request = URLRequest(url: endpoint("plan")); request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(Request(origin: origin, destination: destination, preferences: preferences, departureTime: departure, arrivalTime: arrivalTime?.ISO8601Format()))
-        let response = try await fetch(request, as: PlanResponse.self)
+        let response: PlanResponse
+        #if canImport(Darwin)
+        if let onPreview {
+            request.setValue("application/x-ndjson, application/json", forHTTPHeaderField: "Accept")
+            response = try await streamedPlan(request, onPreview: onPreview)
+        } else {
+            response = try await fetch(request, as: PlanResponse.self)
+        }
+        #else
+        response = try await fetch(request, as: PlanResponse.self)
+        #endif
         guard !response.isSample, response.routes.allSatisfy({ !$0.isSample }) else {
             throw LiveRoutingError.unavailable("The server returned sample routes. Connect to the live Crosstown server.")
         }
         return response
     }
+    #if canImport(Darwin)
+    private func streamedPlan(_ request: URLRequest, onPreview: @MainActor @Sendable (Itinerary) -> Void) async throws -> PlanResponse {
+        struct Event: Decodable {
+            let type: String
+            let route: Itinerary?
+            let plan: PlanResponse?
+            let error: String?
+        }
+        guard let scheme = request.url?.scheme, ["http", "https"].contains(scheme) else { throw LiveRoutingError.invalidURL }
+        do {
+            let (bytes, response) = try await Self.session.bytes(for: request)
+            guard let http = response as? HTTPURLResponse else { throw LiveRoutingError.unavailable("The route server did not respond.") }
+            if http.statusCode != 200 || http.value(forHTTPHeaderField: "Content-Type")?.contains("application/x-ndjson") != true {
+                var data = Data()
+                for try await byte in bytes { data.append(byte) }
+                return try decode(data, from: http, as: PlanResponse.self)
+            }
+            let decoder = JSONDecoder()
+            for try await line in bytes.lines {
+                let event = try decoder.decode(Event.self, from: Data(line.utf8))
+                switch event.type {
+                case "preview":
+                    if let route = event.route, !route.isSample { await onPreview(route) }
+                case "result":
+                    if let plan = event.plan { return plan }
+                case "error":
+                    throw LiveRoutingError.unavailable(event.error ?? "The route search could not be completed.")
+                default: break
+                }
+            }
+            throw LiveRoutingError.unavailable("The route search ended early. Try again.")
+        } catch { throw routingError(error) }
+    }
+    #endif
     private func endpoint(_ path: String) -> URL { baseURL.appendingPathComponent("api").appendingPathComponent(path) }
     private func fetch<T: Decodable & Sendable>(_ request: URLRequest, as type: T.Type) async throws -> T {
         guard let scheme = request.url?.scheme, ["http", "https"].contains(scheme) else { throw LiveRoutingError.invalidURL }
         do {
             let (data, response) = try await Self.session.data(for: request)
             guard let http = response as? HTTPURLResponse else { throw LiveRoutingError.unavailable("The route server did not respond.") }
-            guard http.statusCode == 200 else {
-                let failure = try? JSONDecoder().decode(Failure.self, from: data)
-                throw LiveRoutingError.unavailable(failure?.error ?? "The route server returned HTTP \(http.statusCode).")
-            }
-            return try JSONDecoder().decode(T.self, from: data)
-        } catch let error as LiveRoutingError { throw error }
-        catch let error as URLError where error.code == .cancelled { throw CancellationError() }
-        catch is DecodingError { throw LiveRoutingError.unavailable("The server response could not be read. Update the app and server together.") }
-        catch { throw LiveRoutingError.unavailable("Can’t connect to the route server. Check your internet connection and the server address in Sources.") }
+            return try decode(data, from: http, as: type)
+        } catch { throw routingError(error) }
+    }
+    private func decode<T: Decodable>(_ data: Data, from response: HTTPURLResponse, as type: T.Type) throws -> T {
+        guard response.statusCode == 200 else {
+            let failure = try? JSONDecoder().decode(Failure.self, from: data)
+            throw LiveRoutingError.unavailable(failure?.error ?? "The route server returned HTTP \(response.statusCode).")
+        }
+        return try JSONDecoder().decode(type, from: data)
+    }
+    private func routingError(_ error: Error) -> Error {
+        if let error = error as? LiveRoutingError { return error }
+        if error is CancellationError || (error as? URLError)?.code == .cancelled { return CancellationError() }
+        if error is DecodingError {
+            return LiveRoutingError.unavailable("The route server response could not be read.")
+        }
+        return LiveRoutingError.unavailable("Can’t connect to the route server. Check your internet connection and the server address in Sources.")
     }
 }

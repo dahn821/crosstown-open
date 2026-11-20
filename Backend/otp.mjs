@@ -225,7 +225,7 @@ export function searchFamilies(p,busConnected){
   // Mixed searches can prune a whole mode before Crosstown compares its priorities.
   const families=[{direct:['WALK'],directOnly:true}];
   const transitSearch=modes=>({direct:['WALK'],transit:{access:['WALK'],egress:['WALK'],transfer:['WALK'],transit:modes}});
-  if(transit.length)families.push(transitSearch(transit));
+  if(transit.length===1||transit.length>1&&p.maxTransfers>0)families.push(transitSearch(transit));
   if(transit.length>1)for(const mode of transit)families.push(transitSearch([mode]));
   if(p.modes.includes('bike')&&p.maxBikingMinutes>0){
     const bike=p.bikeSource==='ownBike'?'BICYCLE':'BICYCLE_RENTAL',mixed=bike==='BICYCLE_RENTAL'?['WALK',bike]:[bike];
@@ -296,17 +296,31 @@ function fasterSubwayTransfers(pairs,request,store){
   return options;
 }
 
-export async function route(input,store,{searcher=search,feedsReady=Promise.resolve(),bikeCandidateLimit=8,rentalTransitFamilies=true,egressBikeConnections=false,lowAssistPickupLimit=4}={}){
+export async function route(input,store,{searcher=search,feedsReady={},onPreview,bikeCandidateLimit=8,rentalTransitFamilies=true,egressBikeConnections=false,lowAssistPickupLimit=4}={}){
   const request=validateRequest(input),p=request.preferences,families=searchFamilies(p,Boolean(store.busKey)).filter(m=>rentalTransitFamilies||!JSON.stringify(m.transit||{}).includes('BICYCLE_RENTAL'));
-  const familiesDone=Promise.allSettled(families.map(async modes=>{
-    if(modes.direct.includes('BICYCLE_RENTAL'))await feedsReady;
+  const checks=families.map(async modes=>{
+    if(modes.direct.includes('BICYCLE_RENTAL'))await feedsReady.bike;
     return searcher(toInput(request.origin),toInput(request.destination),modes,p,request.arriveBy??request.depart,request.arriveBy!=null);
-  }));
+  });
+  if(onPreview){
+    let shown=false;
+    for(const check of checks)void check.then(async raws=>{
+      if(shown||!raws.length)return;
+      const modes=new Set(raws.flatMap(raw=>raw.legs.map(leg=>leg.mode)));
+      await Promise.all([modes.has('SUBWAY')&&feedsReady.subway,modes.has('BUS')&&feedsReady.bus]);
+      if(shown)return;
+      const snapshot=predictionSnapshot(store),available=raws.map(raw=>normalize(raw,request,snapshot)).filter(Boolean);
+      const first=bestRoutes(available,p)[0];
+      if(first){shown=true;onPreview(first);}
+    }).catch(()=>{});
+  }
   const bikeConnectionsDone=Promise.allSettled([false,...(egressBikeConnections?[true]:[])].map(async egress=>{
-    await feedsReady;
+    if(!p.modes.includes('bike')||!p.modes.includes('subway')||p.maxBikingMinutes===0)return [];
+    await Promise.all([feedsReady.subway,feedsReady.bike]);
+    if(!rentalTransitFamilies&&p.bikeSource==='citiBike'&&store.status().bikes.stale)return [];
     return bikeConnections(request,store,searcher,bikeCandidateLimit,egress);
   }));
-  const [results]=await Promise.all([familiesDone,feedsReady]);
+  const [results]=await Promise.all([Promise.allSettled(checks),...Object.values(feedsReady)]);
   let raw=results.filter(r=>r.status==='fulfilled').flatMap(r=>r.value);
   const errors=results.filter(r=>r.status==='rejected').map(r=>r.reason.message);
   if(!raw.length&&errors.length===results.length)throw results[0].reason;

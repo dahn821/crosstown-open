@@ -39,6 +39,7 @@ final class AppModel {
     var health: LiveHealth?
     var request = PlanRequest()
     var response: PlanResponse?
+    var earlyRoute: Itinerary?
     var departureSelections: [String: String] = [:]
     func resolvedRoute(_ route: Itinerary) -> Itinerary {
         guard let id = departureSelections[route.groupId ?? route.id], route.alternativeIds?.contains(id) == true,
@@ -132,19 +133,32 @@ final class AppModel {
     }
     func useCurrentLocation() {
         let alreadyCurrent = request.origin == PlanRequest.currentLocationID
-        cancelLocation(); latestSearch = UUID(); response = nil; error = nil; loading = false
+        cancelLocation(); latestSearch = UUID(); response = nil; earlyRoute = nil; error = nil; loading = false
         request.origin = PlanRequest.currentLocationID
         if alreadyCurrent { Task { await refresh() } }
     }
     func replan() async {
         guard let origin, let destination else { return }
         loading = true
+        earlyRoute = nil
         let query = request, server = apiBaseURLString, token = UUID()
         if renderedRequest != query || renderedServer != server { response = nil; error = nil; departureSelections.removeAll() }
         latestSearch = token
         do {
             let client = try client()
-            let result = try await client.plan(origin: origin, destination: destination, preferences: query.preferences, departureOffsetMinutes: query.departureMinute, departureTime: query.departureTime, arrivalTime: query.arrivalTime)
+            let hosted = health?.router.mode == "community" || URL(string: server)?.host == "crosstown-nyc.netlify.app"
+            let showFirst: (@MainActor @Sendable (Itinerary) -> Void)?
+            if hosted && response == nil {
+                showFirst = { route in
+                    guard !Task.isCancelled, self.request == query, self.apiBaseURLString == server, self.latestSearch == token else { return }
+                    self.earlyRoute = route
+                }
+            } else {
+                showFirst = nil
+            }
+            let result = try await client.plan(origin: origin, destination: destination, preferences: query.preferences,
+                                               departureOffsetMinutes: query.departureMinute, departureTime: query.departureTime,
+                                               arrivalTime: query.arrivalTime, onPreview: showFirst)
             guard !Task.isCancelled, request == query, server == apiBaseURLString, latestSearch == token else { return }
             response = result
             departureSelections = departureSelections.filter { result.alternativeRoutes?[$0.value] != nil }
@@ -154,7 +168,7 @@ final class AppModel {
             guard !Task.isCancelled, request == query, server == apiBaseURLString, latestSearch == token else { return }
             response = nil; self.error = error.localizedDescription
         }
-        loading = false
+        earlyRoute = nil; loading = false
     }
     func swap() {
         guard origin != nil, destination != nil else { return }

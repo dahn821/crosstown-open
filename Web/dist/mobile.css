@@ -41,11 +41,16 @@
   .travel-modes { padding:0 14px 10px; gap:5px; min-height:50px; }
   .travel-modes button { padding:0 10px; font-size:12px; min-height:40px; flex:1; gap:4px; }
   .travel-modes .icon { width:14px; height:14px; }
+  .results-card[data-sheet-state="peek"] .results-top:has(.early-route-shortcut:not([hidden])) :is(.sheet-size,[data-action="refresh"]),
   .results-card[data-sheet-state="peek"] .priorities,
   .results-card[data-sheet-state="peek"] .route-list,
   .results-card[data-sheet-state="peek"] .results-footer,
   .results-card[data-sheet-state="peek"] .custom-note,
   .results-card[data-sheet-state="peek"] .mode-context { display:none; }
+  .results-card[data-sheet-state="peek"] .early-route-shortcut:not([hidden]) {
+    display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; min-height:44px;
+    border-radius:11px; padding:0 11px; background:#e8efff; color:#1948c8; font-size:12px; font-weight:700;
+  }
   .priorities { display:flex; flex-shrink:0; margin:0 14px 10px; overflow-x:auto; background:none; padding:0; gap:6px; }
   .priorities button { flex:1; flex-direction:row; gap:4px; font-size:10px; padding:0 8px; min-height:36px; border:1px solid var(--line); border-radius:18px; white-space:nowrap; }
   .priorities .icon { width:13px; height:13px; }
